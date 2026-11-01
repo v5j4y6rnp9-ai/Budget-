@@ -164,7 +164,7 @@ function load() {
   catch (e) { S = defaultState(); }
   const d = defaultState();
   for (const k of ['categories','transactions','recurring','rules']) if (!Array.isArray(S[k])) S[k] = d[k];
-  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.contacts)) S.contacts = [];
+  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.debts)) S.debts = []; S.bank = S.bank || null; if (!Array.isArray(S.contacts)) S.contacts = [];
   S.settings = Object.assign(d.settings, S.settings || {});
   // Add any built-in shop keywords introduced in newer versions (unless the user removed them).
   S.removedBuiltins = S.removedBuiltins || [];
@@ -266,6 +266,41 @@ function tripStats(excludeId) {
     tr.owed = tr.E - tr.A;                  // before settlement: >0 work owes you, <0 advance left
   }
   return trips;
+}
+const DEBT_TYPES = ['Car loan', 'Home loan / mortgage', 'Card instalments / revolving', 'Student loan', 'Personal loan', 'Family / friend', 'Other'];
+// Remaining debt = balance on the as-of date minus the principal part of payments made since.
+// With an interest rate, each payment first covers that month's interest (an estimate).
+function debtStatus(d) {
+  const pays = S.transactions.filter(t => t.type === 'expense' && t.date >= d.asOf && (t.debtId === d.id || (d.recId && t.recId === d.recId)))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  let bal = +d.balance || 0, paid = 0, interest = 0;
+  const r = (+d.rate || 0) / 100 / 12;
+  for (const t of pays) { const i = Math.max(0, bal * r); interest += i; paid += t.amount; bal = Math.max(0, bal - Math.max(0, t.amount - i)); }
+  const monthly = +d.payment || (d.recId ? (+((S.recurring.find(x => x.id === d.recId) || {}).amount) || 0) : 0);
+  let months = null;
+  if (bal > 0 && monthly > 0) months = r > 0 ? (monthly > bal * r ? Math.ceil(-Math.log(1 - r * bal / monthly) / Math.log(1 + r)) : Infinity) : Math.ceil(bal / monthly);
+  return { remaining: bal, paid, interest, monthly, months, count: pays.length };
+}
+// Estimated bank balance: starting amount, plus money in, minus everything spent since that date
+// (card purchases are taken off straight away, as if already paid).
+function bankStatus() {
+  const B = S.bank; if (!B || !B.date) return null;
+  const today = todayStr(); let inc = 0, out = 0, workIn = 0;
+  for (const t of S.transactions) {
+    if (t.date < B.date || t.date > today) continue;
+    if (t.type === 'income') inc += t.amount;
+    else if (t.type === 'advance' || t.type === 'reimb') workIn += t.amount;
+    else if (t.type === 'return') workIn -= t.amount;
+    else out += t.amount;
+  }
+  const now_ = (+B.amount || 0) + inc + workIn - out;
+  // Rest of this month: regular items not yet added.
+  const cym = curYm(), d = new Date().getDate(); let upcoming = 0;
+  for (const r of S.recurring) {
+    if (!r.active || (r.startMonth && r.startMonth > cym) || S.applied[r.id + ':' + cym]) continue;
+    if (Math.min(r.day || 1, daysInMonth(cym)) > d) upcoming += r.type === 'income' ? +r.amount : -r.amount;
+  }
+  return { start: +B.amount || 0, date: B.date, inc, workIn, out, now: now_, upcoming, endOfMonth: now_ + upcoming };
 }
 const tripNames = () => [...new Set(S.transactions.map(t => (t.trip || '').trim()).filter(Boolean))].sort();
 const totalBudget = () => S.categories.reduce((a, c) => a + (+c.budget || 0), 0);
@@ -471,6 +506,23 @@ function vOverview() {
   const rows = S.categories.filter(c => c.budget > 0 || st.byCat[c.id]).map(c => catRow(c, st.byCat[c.id] || 0));
   if (st.byCat.uncat) rows.push(catRow(UNCAT, st.byCat.uncat, true));
   if (st.byCat.workloss) rows.push(catRow(WORKLOSS, st.byCat.workloss));
+  const bs = bankStatus();
+  if (bs) {
+    html += `<div class="card"><div class="row"><h3 style="margin:0">🏦 Money in the bank</h3><span class="grow"></span><span class="chip">estimate</span></div>
+      <div class="row" style="margin-top:8px"><span>Now</span><span class="grow"></span><b style="font-size:20px" class="${bs.now < 0 ? 'bad' : ''}">${yen(bs.now)}</b></div>
+      <div class="small muted">Since ${dayLabel(bs.date)}: start ${yen(bs.start)} + income ${yen(bs.inc)}${bs.workIn ? ` + from work ${yen(bs.workIn)}` : ''} − spending ${yen(bs.out)}</div>
+      ${bs.upcoming ? `<div class="row small" style="margin-top:6px"><span>End of ${monthLabel(curYm()).split(' ')[0]}, after regular items still to come (${bs.upcoming > 0 ? '+' : '−'}${yen(Math.abs(bs.upcoming))})</span><span class="grow"></span><b>${yen(bs.endOfMonth)}</b></div>` : ''}
+    </div>`;
+  } else if (S.transactions.length) html += `<div class="card small">🏦 Want to see how much is left in the bank? Add your starting balance in <button class="link small" data-act="tab" data-view="settings">Settings</button>.</div>`;
+  if (S.debts.length) {
+    const rows = S.debts.map(d => { const st = debtStatus(d), tot = st.paid + st.remaining, pct = tot ? (tot - st.remaining) / tot * 100 : 0;
+      const left = st.remaining <= 0 ? '<span class="good">Paid off 🎉</span>' : st.months === Infinity ? '<span class="bad">Payment doesn\'t cover the interest</span>' : st.months ? `about ${st.months} month${st.months === 1 ? '' : 's'} left at ${yen(st.monthly)}/month` : 'Link a regular payment to see time left';
+      return `<div class="catrow"><div class="row"><b>${esc(d.name)}</b><span class="grow"></span><b>${yen(st.remaining)}</b></div>
+        <div class="small muted">${esc(d.type)} · paid ${yen(st.paid)} since ${dayLabel(d.asOf)}${st.interest ? ` (≈${yen(st.interest)} interest)` : ''}</div>
+        <div class="bar"><i style="width:${Math.min(100, pct)}%;background:var(--good)"></i></div><div class="small right">${left}</div></div>`; }).join('');
+    const total = S.debts.reduce((a, d) => a + debtStatus(d).remaining, 0);
+    html += `<div class="card"><div class="row"><h3 style="margin:0">📉 Debts</h3><span class="grow"></span><b>${yen(total)} left</b></div>${rows}</div>`;
+  }
   const trips = Object.values(tripStats()).sort((a, b) => (a.settled - b.settled) || b.last.localeCompare(a.last));
   if (trips.length) {
     const open = trips.filter(t => !t.settled);
@@ -567,6 +619,7 @@ function openTxModal(id) {
     <label>Description<input id="m_desc" value="${esc(t.desc)}" placeholder="e.g. Rent, Electricity, Salary"></label>
     <label>Amount (¥)<input id="m_amount" type="number" inputmode="decimal" value="${t.amount}"></label>
     <label id="m_catwrap">Category<select id="m_cat" data-chg="mCat">${catOptions(t.cat)}</select></label>
+    ${S.debts.length ? `<label id="m_debtwrap">Pays off debt (optional)<select id="m_debt"><option value="">—</option>${S.debts.map(d => `<option value="${d.id}"${d.id === t.debtId ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>` : ''}
     <label id="m_tripwrap">Business trip name (the trip the company pays back — not a category)<input id="m_trip" list="tripList" value="${esc(t.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
     <div id="m_preview" class="small" hidden style="background:var(--accent-soft);border-radius:10px;padding:10px;margin-bottom:10px"></div>
     <div class="grid2"><label>Account / card<input id="m_account" value="${esc(t.account || '')}" placeholder="optional"></label>
@@ -600,6 +653,7 @@ function updatePreview() {
 function syncTxModal() {
   const type = $('#m_type').value, cat = $('#m_cat').value;
   $('#m_catwrap').hidden = type !== 'expense';
+  if ($('#m_debtwrap')) $('#m_debtwrap').hidden = type !== 'expense';
   $('#m_tripwrap').hidden = !(WORK_TYPES.includes(type) || (type === 'expense' && cat === 'work'));
   updatePreview();
   if (type !== 'expense') $('#m_rule').hidden = true;
@@ -693,13 +747,40 @@ function openRecModal(id) {
   $('#r_type').value = r.type; $('#r_catwrap').hidden = r.type === 'income';
 }
 
+function openDebtModal(id) {
+  const d = id ? S.debts.find(x => x.id === id) : { name: '', type: DEBT_TYPES[0], balance: '', asOf: S.bank && S.bank.date || curYm() + '-01', rate: '', payment: '', recId: '' };
+  if (!d) return;
+  MODAL = { kind: 'debt', id };
+  const recs = S.recurring.filter(r => r.type === 'expense');
+  showModal(`<h3>${id ? 'Edit' : 'Add'} debt</h3>
+    <label>Name<input id="d_name" value="${esc(d.name)}" placeholder="e.g. Car loan (Toyota)"></label>
+    <label>Type<select id="d_type">${DEBT_TYPES.map(t => `<option${t === d.type ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+    <div class="grid2"><label>Amount left (¥)<input id="d_balance" type="number" inputmode="numeric" value="${d.balance}"></label>
+    <label>…as of this date<input id="d_asof" type="date" value="${d.asOf}"></label></div>
+    <label>Regular payment that pays it off<select id="d_rec"><option value="">— none / I'll tag payments myself —</option>${recs.map(r => `<option value="${r.id}"${r.id === d.recId ? ' selected' : ''}>${esc(r.desc)} (${yen(r.amount)} on day ${r.day})</option>`).join('')}</select></label>
+    <div class="grid2"><label>Interest rate % per year (optional)<input id="d_rate" type="number" inputmode="decimal" step="0.01" value="${d.rate}"></label>
+    <label>Monthly payment (if not linked)<input id="d_payment" type="number" inputmode="numeric" value="${d.payment}"></label></div>
+    <div class="small muted">Payments from the linked regular item are counted automatically. For other payments (e.g. on a card), open that entry in Spending and choose this debt under “Pays off debt”.</div>
+    <div class="actions">${id ? '<button class="danger" data-act="debtDelete">Delete</button>' : ''}<span class="grow"></span><button data-act="closeModal">Cancel</button><button class="primary" data-act="debtSave">Save</button></div>`);
+}
+
 /* ----- Settings ----- */
 function vSettings() {
   const opt = (v, cur) => WEEKDAYS.map((d, i) => `<option value="${i}"${i === cur ? ' selected' : ''}>${d}</option>`).join('');
   const ruleRow = r => `<div class="rulerow"><input value="${esc(r.keyword)}" data-chg="ruleKw" data-id="${r.id}"><select data-chg="ruleCat" data-id="${r.id}">${catOptions(r.cat)}</select><button class="danger" data-act="ruleDel" data-id="${r.id}" style="padding:6px" aria-label="Delete rule">✕</button></div>`;
   const user = S.rules.filter(r => !r.builtin), built = S.rules.filter(r => r.builtin);
   const lb = S.settings.lastBackup;
-  return `<div class="card"><h3>Weekly summary</h3><div class="grid2">
+  const B = S.bank || {};
+  return `<div class="card"><h3>🏦 Bank balance</h3>
+      <p class="small muted" style="margin-top:0">Enter how much was in your bank account(s) on the day you start tracking. The app then adds income and takes off spending from that date. Card purchases are taken off when you make them, so this shows the money that's really free.</p>
+      <div class="grid2"><label>Balance on that day (¥)<input type="number" inputmode="numeric" data-chg="bankAmount" value="${B.amount ?? ''}" placeholder="e.g. 1200000"></label>
+      <label>Starting date<input type="date" data-chg="bankDate" value="${B.date || ''}"></label></div>
+      ${B.date ? '<button class="link small" data-act="bankClear">Stop tracking bank balance</button>' : ''}</div>
+    <div class="card"><h3>📉 Debts</h3>
+      <p class="small muted" style="margin-top:0">Add each loan with what's left on it. Link it to its regular payment and the app counts it down every month. Whenever you get a loan statement, update the balance here.</p>
+      ${S.debts.map(d => `<div class="tx" data-act="editDebt" data-id="${d.id}"><div class="d"><div>${esc(d.name)}</div><div class="chip">${esc(d.type)} · ${yen(d.balance)} on ${dayLabel(d.asOf)}${d.rate ? ` · ${d.rate}%` : ''}</div></div><span class="amt">${yen(debtStatus(d).remaining)}</span></div>`).join('')}
+      <div class="actions"><button class="primary" data-act="addDebt">+ Add debt</button></div></div>
+    <div class="card"><h3>Weekly summary</h3><div class="grid2">
       <label>Week starts on<select data-chg="weekStart">${opt(0, S.settings.weekStart)}</select></label>
       <label>Remind me on<select data-chg="summaryDay">${opt(0, S.settings.summaryDay)}</select></label></div>
       <div class="small muted">On this day the Overview shows a reminder that your summary is ready to send.</div></div>
@@ -754,12 +835,13 @@ function mergeState(inc) {
   res.removed = before - S.transactions.length;
   S.deleted = del;
   // lists with ids: union; when both have the same item, the newer file wins
-  for (const k of ['categories', 'recurring', 'rules', 'contacts']) {
+  for (const k of ['categories', 'recurring', 'rules', 'contacts', 'debts']) {
     const map = new Map((S[k] || []).map(x => [x.id, x]));
     for (const x of inc[k] || []) if (!map.has(x.id) || newer) map.set(x.id, x);
     S[k] = [...map.values()];
   }
   for (const k of ['applied', 'importMaps', 'tripMeta']) S[k] = newer ? Object.assign({}, S[k], inc[k]) : Object.assign({}, inc[k], S[k]);
+  if (inc.bank && (!S.bank || (inc.bank.u || 0) > (S.bank.u || 0))) S.bank = inc.bank;
   if (newer && inc.settings) S.settings = Object.assign(S.settings, inc.settings, { lastBackup: S.settings.lastBackup });
   return res;
 }
@@ -820,7 +902,7 @@ const ACT = {
     if (cat === 'uncat') cat = categorize(desc);
     const trip = cat === 'work' ? $('#m_trip').value.trim() : '';
     if (WORK_TYPES.includes(type) && !trip) return toast('Please enter the business trip this money is for');
-    const data = { date, desc, amount, type, cat, trip, account: $('#m_account').value.trim(), note: $('#m_note').value.trim() };
+    const data = { date, desc, amount, type, cat, trip, debtId: type === 'expense' && $('#m_debt') ? $('#m_debt').value : '', account: $('#m_account').value.trim(), note: $('#m_note').value.trim() };
     data.u = now();
     if (MODAL.id) Object.assign(S.transactions.find(x => x.id === MODAL.id), data);
     else S.transactions.push({ id: uid(), source: 'manual', ...data });
@@ -872,6 +954,19 @@ const ACT = {
   ruleAdd: () => { const kw = $('#newKw').value, cat = $('#newKwCat').value; if (!norm(kw) || cat === 'uncat') return toast('Enter text and pick a category'); const n = addUserRule(kw, cat); save(); render(); toast(n ? `Rule added · ${n} entries sorted` : 'Rule added'); },
   ruleDel: el => { const r0 = S.rules.find(r => r.id === el.dataset.id); if (r0 && r0.builtin) S.removedBuiltins.push(r0.keyword); S.rules = S.rules.filter(r => r.id !== el.dataset.id); save(); render(); },
   recatAll: () => { let n = 0; for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat') { const c = categorize(t.desc); if (c !== 'uncat') { t.cat = c; t.u = now(); n++; } } save(); render(); toast(`${n} entries sorted`); },
+  addDebt: () => openDebtModal(null),
+  editDebt: el => openDebtModal(el.dataset.id),
+  debtSave: () => {
+    const name = $('#d_name').value.trim(), balance = parseFloat($('#d_balance').value), asOf = $('#d_asof').value;
+    if (!name) return toast('Please enter a name');
+    if (!isFinite(balance) || balance < 0) return toast('Please enter the amount left');
+    if (!asOf) return toast('Please enter the date');
+    const data = { name, type: $('#d_type').value, balance, asOf, rate: parseFloat($('#d_rate').value) || 0, payment: parseFloat($('#d_payment').value) || 0, recId: $('#d_rec').value, u: now() };
+    if (MODAL.id) Object.assign(S.debts.find(x => x.id === MODAL.id), data); else S.debts.push({ id: uid(), ...data });
+    save(); closeModal(); render(); toast('Saved');
+  },
+  debtDelete: () => { if (!confirm('Delete this debt? Your payment entries stay.')) return; S.debts = S.debts.filter(x => x.id !== MODAL.id); save(); closeModal(); render(); },
+  bankClear: () => { S.bank = null; save(); render(); },
   accDel: el => {
     const a = el.dataset.acc, list = S.transactions.filter(t => t.source === 'import' && (t.account || '(no name)') === a);
     if (!confirm(`Remove all ${list.length} entries imported from “${a}”? Your manual entries and regular items are not affected.`)) return;
@@ -908,6 +1003,8 @@ const CHG = {
   ruleCat: el => { const r = S.rules.find(x => x.id === el.dataset.id); if (r) { r.cat = el.value; save(); } },
   contactName: el => { const c = S.contacts.find(x => x.id === el.dataset.id); if (c) { c.name = el.value.trim(); save(); } },
   contactNum: el => { const c = S.contacts.find(x => x.id === el.dataset.id); if (c) { c.number = el.value.trim(); save(); } },
+  bankAmount: el => { S.bank = Object.assign(S.bank || { date: curYm() + '-01' }, { amount: parseFloat(el.value) || 0, u: now() }); save(); render(); },
+  bankDate: el => { S.bank = Object.assign(S.bank || { amount: 0 }, { date: el.value, u: now() }); save(); render(); },
   weekStart: el => { S.settings.weekStart = +el.value; save(); },
   summaryDay: el => { S.settings.summaryDay = +el.value; save(); }
 };
