@@ -94,6 +94,7 @@ details summary{cursor:pointer;color:var(--accent);margin:6px 0}
 <div class="toast" id="toast"></div>
 <input type="file" id="fileCsv" accept=".csv,.txt,text/csv" hidden>
 <input type="file" id="fileBackup" accept=".json,application/json" hidden>
+<input type="file" id="fileSync" accept=".json,application/json" hidden>
 
 <script>
 'use strict';
@@ -102,6 +103,8 @@ const STORE_KEY = 'mybudget.v1';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const yen = n => (n < 0 ? '-' : '') + '¥' + Math.abs(Math.round(n)).toLocaleString('en-US');
+const now = () => Date.now();
+const hashStr = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -139,7 +142,8 @@ const DEFAULT_RULES = {
   'Shopping':['AMAZON','アマゾン','楽天','RAKUTEN','ユニクロ','UNIQLO','ニトリ','無印','MUJI','ヨドバシ','YODOBASHI','ビックカメラ','BIC CAMERA','ヤマダ電機','ダイソー','DAISO','ドン・キホーテ','ドンキ','DON QUIJOTE','ZOZO','メルカリ','MERCARI','セリア','ロフト','LOFT','ハンズ','百貨店','三越','伊勢丹','高島屋','大丸','パルコ','ルミネ'],
   'Health':['薬局','ドラッグ','DRUG','マツモトキヨシ','マツキヨ','ウエルシア','ツルハ','スギ薬局','サンドラッグ','ココカラファイン','病院','クリニック','CLINIC','HOSPITAL','歯科','医院','整骨','調剤'],
   'Entertainment':['映画','TOHO','シネマ','CINEMA','カラオケ','STEAM','NINTENDO','任天堂','PLAYSTATION','ゲーム','チケット','TICKET','ぴあ','イープラス','ローチケ'],
-  'Travel':['ホテル','HOTEL','旅館','JAL','日本航空','全日空','AIRBNB','BOOKING.COM','楽天トラベル','じゃらん','JALAN','EXPEDIA','AGODA','新幹線','PEACH','ジェットスター','JETSTAR'],
+  'Travel':['MARRIOTT','マリオット','BONVOY','WESTIN','ウェスティン','SHERATON','シェラトン','RITZ','東横イン','アパホテル','ホテル','HOTEL','旅館','JAL','日本航空','全日空','AIRBNB','BOOKING.COM','楽天トラベル','じゃらん','JALAN','EXPEDIA','AGODA','新幹線','PEACH','ジェットスター','JETSTAR'],
+  'Other':['年会費','カード会費','ANNUAL FEE','MEMBERSHIP FEE'],
   'Insurance':['保険','生命','損保','損害','共済'],
   'Education':['書店','紀伊國屋','紀伊国屋','ジュンク堂','丸善','TSUTAYA','蔦屋','学校','スクール','SCHOOL','塾','UDEMY','KINDLE','英会話']
 };
@@ -160,10 +164,11 @@ function load() {
   catch (e) { S = defaultState(); }
   const d = defaultState();
   for (const k of ['categories','transactions','recurring','rules']) if (!Array.isArray(S[k])) S[k] = d[k];
-  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; if (!Array.isArray(S.contacts)) S.contacts = [];
+  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.contacts)) S.contacts = [];
   S.settings = Object.assign(d.settings, S.settings || {});
 }
 function save() {
+  S.savedAt = now();
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
   catch (e) { toast('Could not save in this browser — please export a backup.'); }
 }
@@ -192,7 +197,7 @@ function addUserRule(keyword, cat) {
   const ex = S.rules.find(r => r.keyword === keyword && !r.builtin);
   if (ex) ex.cat = cat; else S.rules.push({ id: uid(), keyword, cat, builtin: false });
   let n = 0;
-  for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat' && norm(t.desc).includes(keyword)) { t.cat = cat; n++; }
+  for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat' && norm(t.desc).includes(keyword)) { t.cat = cat; t.u = now(); n++; }
   return n;
 }
 function applyRecurring() {
@@ -203,7 +208,7 @@ function applyRecurring() {
     while (ym <= cym && guard++ < 360) {
       const key = r.id + ':' + ym, day = Math.min(r.day || 1, daysInMonth(ym));
       if (!S.applied[key] && (ym < cym || day <= today)) {
-        S.transactions.push({ id: uid(), date: `${ym}-${pad(day)}`, desc: r.desc, amount: +r.amount || 0, type: r.type,
+        S.transactions.push({ id: `r_${r.id}_${ym}`, u: now(), date: `${ym}-${pad(day)}`, desc: r.desc, amount: +r.amount || 0, type: r.type,
           cat: r.type === 'income' ? 'income' : r.cat, source: 'recurring', account: r.account || '', note: '', recId: r.id });
         S.applied[key] = 1; added++;
       }
@@ -360,7 +365,7 @@ function detectMapping(rows) {
     const ratio = vals.length / Math.max(1, data.length); if (ratio < 0.5) continue;
     let score = ratio * 10 + Math.log10(median(vals.map(Math.abs)) + 1) * 2;
     if (/利用金額|ご利用金額|金額|AMOUNT|DEBIT/.test(h(i))) score += 20;
-    if (/手数料|回数|区分|残高|BALANCE/.test(h(i))) score -= 20;
+    if (/手数料|回数|区分|残高|BALANCE|外貨|現地|通貨|レート|換算|ポイント|マイル|今回|翌月|繰越|FOREIGN|RATE/.test(h(i))) score -= 20;
     if (score > best) { best = score; amountCol = i; }
   }
   let descCol = -1; best = -Infinity;
@@ -376,6 +381,7 @@ function detectMapping(rows) {
   return { dateCol, descCol, amountCol, header, ncol };
 }
 function importSignature(rows, det) { return det.header ? norm(det.header.join('|')).slice(0, 200) : 'cols:' + det.ncol; }
+const PAYMENT_RE = /お支払いありがとう|お支払い ありがとう|ご入金|口座振替|口座引落|お振込|PAYMENT RECEIVED|THANK YOU|AUTOPAY|返済/;
 function buildImportItems() {
   const I = UI.imp; const { dateCol, descCol, amountCol } = I.map;
   const existing = {};
@@ -384,6 +390,7 @@ function buildImportItems() {
   for (const r of I.rows) {
     const date = parseDate(r[dateCol]), a = parseAmount(r[amountCol]), desc = (r[descCol] || '').trim();
     if (!date || a === null || a === 0) continue;
+    if (I.mode === 'card' && a < 0 && PAYMENT_RE.test(norm(desc))) continue; // your payment to the card, not a refund
     let type = 'expense', amount = a;
     if (I.mode === 'bank') { if (a < 0) amount = -a; else type = 'income'; }
     const k = date + '|' + norm(desc) + '|' + amount + '|' + type;
@@ -673,12 +680,58 @@ function vSettings() {
       ${user.length ? '<div class="small" style="margin:10px 0 6px"><b>Your rules</b></div>' + user.map(ruleRow).join('') : ''}
       <details><summary>Built-in rules (${built.length})</summary>${built.map(ruleRow).join('')}</details>
       <div class="actions"><button data-act="recatAll">Re-sort uncategorized entries</button></div></div>
+    <div class="card"><h3>Sync between devices</h3>
+      <p class="small muted" style="margin-top:0">Each iPhone or iPad keeps its own copy. To bring them in line, pass a sync file through iCloud Drive (or AirDrop) — it never goes to any other company's server.</p>
+      <ol class="small" style="padding-left:18px;margin:0 0 10px"><li><b>Merge</b> the latest sync file from iCloud Drive (if there is one).</li><li>Make your changes.</li><li><b>Save sync file</b> → Save to Files → iCloud Drive, replacing the old one.</li></ol>
+      <div class="btns"><button class="primary" data-act="syncSave">Save sync file</button><button data-act="syncMerge">Merge from another device</button></div></div>
     <div class="card"><h3>Backup</h3>
       <p class="small muted" style="margin-top:0">Your data lives only in this browser on this device. If you clear browser data, it's gone — export a backup now and then and keep it somewhere safe.
       ${lb ? `Last backup: ${lb}.` : '<span class="warn">No backup yet.</span>'}</p>
       <div class="btns"><button class="primary" data-act="exportJson">Export backup</button><button data-act="importJson">Restore backup</button><button data-act="exportCsv">Export entries (CSV)</button></div></div>
     <div class="card"><h3>Privacy</h3><p class="small" style="margin:0">This app has no server and no account. It is locked so it cannot connect to the internet, so nothing you enter is sent anywhere. The only time data leaves this device is when <i>you</i> copy or send a weekly summary (for example by text message, which goes through your phone carrier).</p></div>
     <div class="card"><h3>Danger zone</h3><button class="danger" data-act="wipe">Delete all data</button></div>`;
+}
+
+/* ---------- sync between devices ---------- */
+function mergeState(inc) {
+  const res = { added: 0, updated: 0, removed: 0 };
+  const newer = (inc.savedAt || 0) > (S.savedAt || 0);
+  // deletions from both sides
+  const del = Object.assign({}, inc.deleted || {}, S.deleted || {});
+  for (const [id, t] of Object.entries(inc.deleted || {})) if (!S.deleted[id] || S.deleted[id] < t) del[id] = t;
+  const byId = new Map(S.transactions.map(t => [t.id, t]));
+  const ckey = t => [t.date, norm(t.desc), t.amount, t.type].join('|');
+  const local = {}; for (const t of S.transactions) if (t.source !== 'manual') { const k = ckey(t); local[k] = (local[k] || 0) + 1; }
+  const recKeys = new Set(S.transactions.filter(t => t.recId).map(t => t.recId + ':' + t.date.slice(0, 7)));
+  for (const t of inc.transactions || []) {
+    if (del[t.id] && del[t.id] >= (t.u || 0)) continue;
+    const mine = byId.get(t.id);
+    if (mine) { if ((t.u || 0) > (mine.u || 0)) { Object.assign(mine, t); res.updated++; } continue; }
+    if (t.recId && recKeys.has(t.recId + ':' + t.date.slice(0, 7))) continue;            // same regular payment already added here
+    if (t.source !== 'manual') { const k = ckey(t); if (local[k] > 0) { local[k]--; continue; } } // same statement row imported on both devices
+    S.transactions.push(t); byId.set(t.id, t); res.added++;
+  }
+  const before = S.transactions.length;
+  S.transactions = S.transactions.filter(t => !(del[t.id] && del[t.id] >= (t.u || 0)));
+  res.removed = before - S.transactions.length;
+  S.deleted = del;
+  // lists with ids: union; when both have the same item, the newer file wins
+  for (const k of ['categories', 'recurring', 'rules', 'contacts']) {
+    const map = new Map((S[k] || []).map(x => [x.id, x]));
+    for (const x of inc[k] || []) if (!map.has(x.id) || newer) map.set(x.id, x);
+    S[k] = [...map.values()];
+  }
+  for (const k of ['applied', 'importMaps', 'tripMeta']) S[k] = newer ? Object.assign({}, S[k], inc[k]) : Object.assign({}, inc[k], S[k]);
+  if (newer && inc.settings) S.settings = Object.assign(S.settings, inc.settings, { lastBackup: S.settings.lastBackup });
+  return res;
+}
+// On iPhone/iPad, hand the file to the Share sheet ("Save to Files" → iCloud Drive); elsewhere, download it.
+function exportFile(name, text, type) {
+  try {
+    const f = new File([text], name, { type });
+    if (navigator.canShare && navigator.canShare({ files: [f] }) && IS_IOS) { navigator.share({ files: [f] }).catch(() => {}); return; }
+  } catch (e) {}
+  download(name, text, type);
 }
 
 /* ---------- modal ---------- */
@@ -729,18 +782,21 @@ const ACT = {
     if (cat === 'uncat') cat = categorize(desc);
     const trip = cat === 'work' ? $('#m_trip').value.trim() : '';
     const data = { date, desc, amount, type, cat, trip, account: $('#m_account').value.trim(), note: $('#m_note').value.trim() };
+    data.u = now();
     if (MODAL.id) Object.assign(S.transactions.find(x => x.id === MODAL.id), data);
     else S.transactions.push({ id: uid(), source: 'manual', ...data });
     let extra = 0;
     if (!$('#m_rule').hidden && $('#m_remember').checked && cat !== 'uncat' && type === 'expense') extra = addUserRule($('#m_kw').value, cat);
     save(); closeModal(); render(); toast(extra ? `Saved · ${extra} similar entries also sorted` : 'Saved');
   },
-  txDelete: () => { if (!confirm('Delete this entry?')) return; S.transactions = S.transactions.filter(x => x.id !== MODAL.id); save(); closeModal(); render(); toast('Deleted'); },
+  txDelete: () => { if (!confirm('Delete this entry?')) return; S.deleted[MODAL.id] = now(); S.transactions = S.transactions.filter(x => x.id !== MODAL.id); save(); closeModal(); render(); toast('Deleted'); },
   pickCsv: () => { $('#fileCsv').value = ''; $('#fileCsv').click(); },
   impCancel: () => { UI.imp = null; render(); },
   impDo: () => {
     const I = UI.imp; let n = 0;
-    for (const x of I.items) if (x.include) { S.transactions.push({ id: uid(), date: x.date, desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
+    const seen = {};
+    for (const x of I.items) if (x.include) { const base = 'i_' + hashStr([x.date, norm(x.desc), x.amount, x.type, norm(I.account)].join('|')); seen[base] = (seen[base] || 0) + 1;
+      S.transactions.push({ id: base + '_' + seen[base], u: now(), date: x.date, desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
     S.importMaps[I.sig] = { ...I.map, mode: I.mode, account: I.account };
     const months = [...new Set(I.items.filter(x => x.include).map(x => x.date.slice(0, 7)))].sort();
     save(); UI.imp = null; UI.view = 'overview'; if (months.length) UI.month = months[months.length - 1]; render(); toast(`Imported ${n} entries`);
@@ -761,20 +817,22 @@ const ACT = {
     const c = S.categories.find(x => x.id === el.dataset.id); if (!c) return;
     const n = S.transactions.filter(t => t.cat === c.id).length;
     if (!confirm(`Delete “${c.name}”?${n ? ` Its ${n} entries become Uncategorized.` : ''}`)) return;
-    S.transactions.forEach(t => { if (t.cat === c.id) t.cat = 'uncat'; });
+    S.transactions.forEach(t => { if (t.cat === c.id) { t.cat = 'uncat'; t.u = now(); } });
     S.recurring.forEach(r => { if (r.cat === c.id) r.cat = 'uncat'; });
     S.rules = S.rules.filter(r => r.cat !== c.id); S.categories = S.categories.filter(x => x.id !== c.id); save(); render();
   },
   ruleAdd: () => { const kw = $('#newKw').value, cat = $('#newKwCat').value; if (!norm(kw) || cat === 'uncat') return toast('Enter text and pick a category'); const n = addUserRule(kw, cat); save(); render(); toast(n ? `Rule added · ${n} entries sorted` : 'Rule added'); },
   ruleDel: el => { S.rules = S.rules.filter(r => r.id !== el.dataset.id); save(); render(); },
-  recatAll: () => { let n = 0; for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat') { const c = categorize(t.desc); if (c !== 'uncat') { t.cat = c; n++; } } save(); render(); toast(`${n} entries sorted`); },
-  exportJson: () => { S.settings.lastBackup = todayStr(); save(); download(`my-budget-backup-${todayStr()}.json`, JSON.stringify(S, null, 1), 'application/json'); render(); },
+  recatAll: () => { let n = 0; for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat') { const c = categorize(t.desc); if (c !== 'uncat') { t.cat = c; t.u = now(); n++; } } save(); render(); toast(`${n} entries sorted`); },
+  syncSave: () => { S.settings.lastBackup = todayStr(); save(); exportFile('my-budget-sync.json', JSON.stringify(S), 'application/json'); render(); },
+  syncMerge: () => { $('#fileSync').value = ''; $('#fileSync').click(); },
+  exportJson: () => { S.settings.lastBackup = todayStr(); save(); exportFile(`my-budget-backup-${todayStr()}.json`, JSON.stringify(S, null, 1), 'application/json'); render(); },
   importJson: () => { $('#fileBackup').value = ''; $('#fileBackup').click(); },
   exportCsv: () => {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = [['Date','Type','Description','Amount','Category','Trip','Account','Note','Source'].join(',')];
     [...S.transactions].sort((a, b) => a.date.localeCompare(b.date)).forEach(t => lines.push([t.date, t.type, q(t.desc), t.amount, q(WORK_TYPES.includes(t.type) ? TYPE_LABEL[t.type] : catById(t.cat).name), q(t.trip), q(t.account), q(t.note), t.source].join(',')));
-    download(`my-budget-entries-${todayStr()}.csv`, '﻿' + lines.join('\r\n'), 'text/csv');
+    exportFile(`my-budget-entries-${todayStr()}.csv`, '﻿' + lines.join('\r\n'), 'text/csv');
   },
   wipe: () => { if (!confirm('Delete ALL data in this app? This cannot be undone.')) return; if (!confirm('Are you sure? Export a backup first if you might need it.')) return; localStorage.removeItem(STORE_KEY); load(); UI.month = curYm(); UI.view = 'overview'; render(); toast('All data deleted'); }
 };
@@ -813,6 +871,15 @@ document.addEventListener('input', e => {
 });
 $('#modal').addEventListener('close', () => { MODAL = null; });
 $('#fileCsv').addEventListener('change', e => { const f = e.target.files[0]; if (f) handleCsvFile(f).catch(err => toast('Could not read that file')); });
+$('#fileSync').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    if (!Array.isArray(data.transactions)) throw new Error('bad');
+    const r = mergeState(data); save(); applyRecurring(); render();
+    toast(`Merged · ${r.added} new, ${r.updated} updated, ${r.removed} removed`);
+  } catch (err) { toast('That is not a sync file from this app'); }
+});
 $('#fileBackup').addEventListener('change', async e => {
   const f = e.target.files[0]; if (!f) return;
   try {
