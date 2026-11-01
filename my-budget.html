@@ -529,7 +529,7 @@ function openTxModal(id) {
   if (!t) return;
   MODAL = { kind: 'tx', id, origCat: t.cat };
   showModal(`<h3>${id ? 'Edit entry' : 'Add entry'}</h3>
-    <div class="grid2"><label>Type<select id="m_type" data-chg="mType"><option value="expense">Spending</option><option value="income">Income</option><option value="advance">Advance from work</option><option value="reimb">Payment from work</option><option value="return">Returned to work</option></select></label>
+    <div class="grid2"><label>Type<select id="m_type" data-chg="mType">${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}"${t.type === v ? ' selected' : ''}>${l === 'Spending' ? 'Spending' : l}</option>`).join('')}</select></label>
     <label>Date<input type="date" id="m_date" value="${t.date}"></label></div>
     <label>Description<input id="m_desc" value="${esc(t.desc)}" placeholder="e.g. Rent, Electricity, Salary"></label>
     <label>Amount (¥)<input id="m_amount" type="number" inputmode="decimal" value="${t.amount}"></label>
@@ -647,7 +647,7 @@ function openRecModal(id) {
   if (!r) return;
   MODAL = { kind: 'rec', id };
   showModal(`<h3>${id ? 'Edit' : 'Add'} regular item</h3>
-    <div class="grid2"><label>Type<select id="r_type" data-chg="rType"><option value="expense">Payment</option><option value="income">Income</option></select></label>
+    <div class="grid2"><label>Type<select id="r_type" data-chg="rType"><option value="expense"${r.type === 'expense' ? ' selected' : ''}>Payment</option><option value="income"${r.type === 'income' ? ' selected' : ''}>Income</option></select></label>
     <label>Day of month<input id="r_day" type="number" min="1" max="31" value="${r.day}"></label></div>
     <label>Description<input id="r_desc" value="${esc(r.desc)}" placeholder="e.g. Rent, Electricity, Salary"></label>
     <label>Amount (¥)<input id="r_amount" type="number" inputmode="numeric" value="${r.amount}"></label>
