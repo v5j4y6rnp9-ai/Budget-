@@ -131,7 +131,7 @@ const DEFAULT_CATEGORIES = [
   ['Insurance','#546e7a'],['Education','#5e35b1'],['Other','#9e9e9e']
 ];
 const DEFAULT_RULES = {
-  'Groceries':['イオン','AEON','イトーヨーカドー','ITO YOKADO','ライフ','西友','SEIYU','マルエツ','オーケー','業務スーパー','コープ','生協','成城石井','まいばすけっと','サミット','ヤオコー','ベルク','いなげや','東急ストア','スーパー','SUPERMARKET','コストコ','COSTCO'],
+  'Groceries':['オオゼキ','京王ストア','フードショー','(食料品)','食品館','肉のハナマサ','イオン','AEON','イトーヨーカドー','ITO YOKADO','ライフ','西友','SEIYU','マルエツ','オーケー','業務スーパー','コープ','生協','成城石井','まいばすけっと','サミット','ヤオコー','ベルク','いなげや','東急ストア','スーパー','SUPERMARKET','コストコ','COSTCO'],
   'Convenience stores':['セブン-イレブン','セブンイレブン','セブン','SEVEN-ELEVEN','7-ELEVEN','ファミリーマート','FAMILYMART','ファミマ','ローソン','LAWSON','ミニストップ','MINISTOP','デイリーヤマザキ','セイコーマート','NEWDAYS'],
   'Dining out':['マクドナルド','MCDONALD','スターバックス','STARBUCKS','ドトール','DOUTOR','タリーズ','TULLY','コメダ','すき家','吉野家','松屋','ガスト','サイゼリヤ','ケンタッキー','KFC','モスバーガー','くら寿司','スシロー','はま寿司','UBER EATS','UBEREATS','出前館','WOLT','居酒屋','レストラン','RESTAURANT','カフェ','CAFE','珈琲','ラーメン','食堂','焼肉'],
   'Transport':['JR','SUICA','スイカ','PASMO','パスモ','メトロ','METRO','鉄道','電鉄','タクシー','TAXI','ENEOS','エネオス','出光','IDEMITSU','コスモ石油','ガソリン','ETC','駐車','パーキング','PARKING','タイムズ','UBER'],
@@ -166,6 +166,13 @@ function load() {
   for (const k of ['categories','transactions','recurring','rules']) if (!Array.isArray(S[k])) S[k] = d[k];
   S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.contacts)) S.contacts = [];
   S.settings = Object.assign(d.settings, S.settings || {});
+  // Add any built-in shop keywords introduced in newer versions (unless the user removed them).
+  S.removedBuiltins = S.removedBuiltins || [];
+  const have = new Set(S.rules.map(r => r.keyword)), byName = Object.fromEntries(S.categories.map(c => [c.name, c.id]));
+  for (const [cat, kws] of Object.entries(DEFAULT_RULES)) for (const k of kws) {
+    const kw = norm(k); if (have.has(kw) || S.removedBuiltins.includes(kw) || !byName[cat]) continue;
+    S.rules.push({ id: uid(), keyword: kw, cat: byName[cat], builtin: true }); have.add(kw);
+  }
 }
 function save() {
   S.savedAt = now();
@@ -351,13 +358,28 @@ function parseAmount(s) {
 }
 function detectMapping(rows) {
   const ncol = Math.max(...rows.map(r => r.length));
+  // Header = nearest row above the first dated row that looks like column titles (skips name lines like 【… 様】).
+  // First real purchase row: has a date and at least 3 filled cells (skips summary lines like お支払日 / 今回ご請求額).
+  let firstAny = rows.findIndex(r => r.some(c => parseDate(c)) && r.filter(c => c.trim()).length >= 3);
+  if (firstAny < 0) firstAny = rows.findIndex(r => r.some(c => parseDate(c)));
+  let header = null;
+  for (let j = firstAny - 1; j >= 0; j--) {
+    const filled = rows[j].filter(c => c.trim()).length;
+    if (filled >= Math.min(3, ncol) && !rows[j].some(c => parseDate(c))) { header = rows[j]; break; }
+  }
+  const h = i => header ? norm(header[i] || '') : '';
+  // Date column: most dates, preferring the purchase date (利用日) over payment/processing dates (お支払日, 処理日).
   const dc = Array(ncol).fill(0);
   rows.forEach(r => r.forEach((c, i) => { if (parseDate(c)) dc[i]++; }));
-  const dateCol = dc.indexOf(Math.max(...dc));
+  let dateCol = 0, bestD = -Infinity;
+  for (let i = 0; i < ncol; i++) {
+    if (!dc[i]) continue;
+    let sc = dc[i];
+    if (/利用日|取引日|購入日|TRANSACTION DATE|^DATE$/.test(h(i))) sc += 1e6;
+    if (/支払日|お支払|処理日|引落|計上|POSTING/.test(h(i))) sc -= 1e6;
+    if (sc > bestD) { bestD = sc; dateCol = i; }
+  }
   const data = rows.filter(r => parseDate(r[dateCol]));
-  const first = rows.findIndex(r => parseDate(r[dateCol]));
-  const header = first > 0 ? rows[first - 1] : null;
-  const h = i => header ? norm(header[i] || '') : '';
   let amountCol = -1, best = -Infinity;
   for (let i = 0; i < ncol; i++) {
     if (i === dateCol) continue;
@@ -365,7 +387,7 @@ function detectMapping(rows) {
     const ratio = vals.length / Math.max(1, data.length); if (ratio < 0.5) continue;
     let score = ratio * 10 + Math.log10(median(vals.map(Math.abs)) + 1) * 2;
     if (/利用金額|ご利用金額|金額|AMOUNT|DEBIT/.test(h(i))) score += 20;
-    if (/手数料|回数|区分|残高|BALANCE|外貨|現地|通貨|レート|換算|ポイント|マイル|今回|翌月|繰越|FOREIGN|RATE/.test(h(i))) score -= 20;
+    if (/手数料|回数|区分|残高|BALANCE|番号|会員|NO\.|外貨|現地|通貨|レート|換算|ポイント|マイル|今回|翌月|繰越|FOREIGN|RATE/.test(h(i))) score -= 20;
     if (score > best) { best = score; amountCol = i; }
   }
   let descCol = -1; best = -Infinity;
@@ -375,27 +397,38 @@ function detectMapping(rows) {
     const avg = txt.reduce((a, v) => a + v.length, 0) / Math.max(1, txt.length);
     let score = txt.length / Math.max(1, data.length) * 10 + avg / 4;
     if (/店名|利用先|内容|摘要|商品名|DESCRIPTION|MERCHANT|PAYEE/.test(h(i))) score += 20;
-    if (/利用者|氏名|NAME$/.test(h(i))) score -= 10;
+    if (/利用者|氏名|会員|名義|区分|NAME$/.test(h(i))) score -= 25;
     if (score > best) { best = score; descCol = i; }
   }
-  return { dateCol, descCol, amountCol, header, ncol };
+  const instCol = header ? header.findIndex(c => /何回目|回目/.test(norm(c))) : -1;
+  return { dateCol, descCol, amountCol, instCol, header, ncol, firstRow: firstAny };
 }
-function importSignature(rows, det) { return det.header ? norm(det.header.join('|')).slice(0, 200) : 'cols:' + det.ncol; }
+function importSignature(rows, det) { return 'v2:' + (det.header ? norm(det.header.join('|')).slice(0, 200) : 'cols:' + det.ncol); }
 const PAYMENT_RE = /お支払いありがとう|お支払い ありがとう|ご入金|口座振替|口座引落|お振込|PAYMENT RECEIVED|THANK YOU|AUTOPAY|返済/;
 function buildImportItems() {
   const I = UI.imp; const { dateCol, descCol, amountCol } = I.map;
   const existing = {};
   for (const t of S.transactions) { const k = t.date + '|' + norm(t.desc) + '|' + t.amount + '|' + t.type; existing[k] = (existing[k] || 0) + 1; }
   I.items = [];
-  for (const r of I.rows) {
-    const date = parseDate(r[dateCol]), a = parseAmount(r[amountCol]), desc = (r[descCol] || '').trim();
+  const dates = I.rows.map(r => parseDate(r[dateCol])).filter(Boolean).sort();
+  const lastDate = dates[dates.length - 1];
+  const startRow = Math.max(0, I.det.firstRow || 0);
+  for (const r of I.rows.slice(startRow)) {
+    let date = parseDate(r[dateCol]); const a = parseAmount(r[amountCol]), desc = (r[descCol] || '').trim();
+    if (!date && a && /年会費|会費|ANNUAL FEE/.test(norm(desc))) date = lastDate; // fees listed without a date
     if (!date || a === null || a === 0) continue;
     if (I.mode === 'card' && a < 0 && PAYMENT_RE.test(norm(desc))) continue; // your payment to the card, not a refund
     let type = 'expense', amount = a;
     if (I.mode === 'bank') { if (a < 0) amount = -a; else type = 'income'; }
-    const k = date + '|' + norm(desc) + '|' + amount + '|' + type;
+    // Instalments (分割払い): the full price is counted once, on the purchase date. Later months' rows are skipped.
+    const dn = desc.normalize('NFKC');
+    const mInst = dn.match(/(\d+)\s*回目/);
+    const instNo = I.det.instCol >= 0 && parseInt(String(r[I.det.instCol] || '').normalize('NFKC')) || (mInst ? +mInst[1] : 0);
+    const cleanDesc = dn.replace(/\s*\d+\s*回払い\s*(\d+\s*回目)?/, '').replace(/\s+/g, ' ').trim() || desc;
+    const k = date + '|' + norm(cleanDesc) + '|' + amount + '|' + type;
     const dup = existing[k] > 0; if (dup) existing[k]--;
-    I.items.push({ date, desc: desc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(desc), dup, include: !dup });
+    const later = instNo > 1;
+    I.items.push({ date, desc: cleanDesc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(cleanDesc), dup: dup || later, inst: later ? instNo : 0, include: !dup && !later });
   }
 }
 
@@ -534,7 +567,7 @@ function openTxModal(id) {
     <label>Description<input id="m_desc" value="${esc(t.desc)}" placeholder="e.g. Rent, Electricity, Salary"></label>
     <label>Amount (¥)<input id="m_amount" type="number" inputmode="decimal" value="${t.amount}"></label>
     <label id="m_catwrap">Category<select id="m_cat" data-chg="mCat">${catOptions(t.cat)}</select></label>
-    <label id="m_tripwrap">Trip / expense claim (optional)<input id="m_trip" list="tripList" value="${esc(t.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
+    <label id="m_tripwrap">Business trip name (the trip the company pays back — not a category)<input id="m_trip" list="tripList" value="${esc(t.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
     <div id="m_preview" class="small" hidden style="background:var(--accent-soft);border-radius:10px;padding:10px;margin-bottom:10px"></div>
     <div class="grid2"><label>Account / card<input id="m_account" value="${esc(t.account || '')}" placeholder="optional"></label>
     <label>Note<input id="m_note" value="${esc(t.note || '')}" placeholder="optional"></label></div>
@@ -593,9 +626,9 @@ function vImport() {
     <label>Trip name for rows you mark 💼 Work (optional)<input data-chg="impTrip" list="tripList2" value="${esc(I.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList2">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
     <div class="grid2"><label>Card / account name<input data-chg="impAccount" value="${esc(I.account)}" placeholder="e.g. Rakuten Card"></label>
     <label>Amounts in this file<select data-chg="impMode"><option value="card"${I.mode === 'card' ? ' selected' : ''}>Card statement</option><option value="bank"${I.mode === 'bank' ? ' selected' : ''}>Bank statement (− = spent)</option></select></label></div>
-    <div class="small muted">${I.items.length} rows found${dups ? ` · ${dups} already imported (unticked)` : ''}. Check the categories, then import.</div></div>
+    <div class="small muted">${I.items.length} rows found${dups ? ` · ${dups} already imported or later instalments (unticked)` : ''}. Check the categories, then import.</div></div>
     <div class="card scroll"><table><thead><tr><th></th><th>Date</th><th>Description</th><th class="right">Amount</th><th>Category</th></tr></thead><tbody>
-    ${I.items.map((x, i) => `<tr class="${x.dup ? 'dup' : ''}"><td><input type="checkbox" data-chg="impInc" data-i="${i}"${x.include ? ' checked' : ''}></td><td style="white-space:nowrap">${x.date.slice(5)}</td><td>${esc(x.desc)}</td>
+    ${I.items.map((x, i) => `<tr class="${x.dup ? 'dup' : ''}"><td><input type="checkbox" data-chg="impInc" data-i="${i}"${x.include ? ' checked' : ''}></td><td style="white-space:nowrap">${x.date.slice(5)}</td><td>${esc(x.desc)}${x.inst ? `<div class="chip">Instalment ${x.inst} — full price already counted when bought</div>` : ''}</td>
       <td class="right ${x.type === 'income' ? 'good' : ''}" style="white-space:nowrap">${x.type === 'income' ? '+' : ''}${yen(x.amount)}</td>
       <td>${x.type === 'income' ? 'Income' : `<select data-chg="impCat" data-i="${i}">${catOptions(x.cat)}</select>`}</td></tr>`).join('')}
     </tbody></table>
@@ -684,6 +717,11 @@ function vSettings() {
       <p class="small muted" style="margin-top:0">Each iPhone or iPad keeps its own copy. To bring them in line, pass a sync file through iCloud Drive (or AirDrop) — it never goes to any other company's server.</p>
       <ol class="small" style="padding-left:18px;margin:0 0 10px"><li><b>Merge</b> the latest sync file from iCloud Drive (if there is one).</li><li>Make your changes.</li><li><b>Save sync file</b> → Save to Files → iCloud Drive, replacing the old one.</li></ol>
       <div class="btns"><button class="primary" data-act="syncSave">Save sync file</button><button data-act="syncMerge">Merge from another device</button></div></div>
+    <div class="card"><h3>Imported statements</h3>
+      <p class="small muted" style="margin-top:0">Imported something wrongly? Remove everything from one card, then import it again.</p>
+      ${(() => { const acc = {}; for (const t of S.transactions) if (t.source === 'import') { const a = t.account || '(no name)'; acc[a] = (acc[a] || 0) + 1; }
+        const ks = Object.keys(acc).sort(); return ks.length ? ks.map(a => `<div class="row" style="padding:4px 0"><span>${esc(a)}</span><span class="grow"></span><span class="muted small">${acc[a]} entries</span>&nbsp;<button class="danger" data-act="accDel" data-acc="${esc(a)}" style="padding:4px 10px">Remove</button></div>`).join('') : '<div class="muted small">Nothing imported yet.</div>'; })()}
+    </div>
     <div class="card"><h3>Backup</h3>
       <p class="small muted" style="margin-top:0">Your data lives only in this browser on this device. If you clear browser data, it's gone — export a backup now and then and keep it somewhere safe.
       ${lb ? `Last backup: ${lb}.` : '<span class="warn">No backup yet.</span>'}</p>
@@ -781,6 +819,7 @@ const ACT = {
     let cat = type === 'income' ? 'income' : WORK_TYPES.includes(type) ? 'work' : $('#m_cat').value;
     if (cat === 'uncat') cat = categorize(desc);
     const trip = cat === 'work' ? $('#m_trip').value.trim() : '';
+    if (WORK_TYPES.includes(type) && !trip) return toast('Please enter the business trip this money is for');
     const data = { date, desc, amount, type, cat, trip, account: $('#m_account').value.trim(), note: $('#m_note').value.trim() };
     data.u = now();
     if (MODAL.id) Object.assign(S.transactions.find(x => x.id === MODAL.id), data);
@@ -808,8 +847,17 @@ const ACT = {
     if (!desc) return toast('Please enter a description');
     if (!isFinite(amount) || amount <= 0) return toast('Please enter an amount');
     const data = { type, desc, amount, day, cat: type === 'income' ? 'income' : $('#r_cat').value, startMonth: $('#r_start').value || curYm(), active: $('#r_active').checked, account: $('#r_account').value.trim() };
-    if (MODAL.id) Object.assign(S.recurring.find(x => x.id === MODAL.id), data); else S.recurring.push({ id: uid(), ...data });
-    save(); const n = applyRecurring(); closeModal(); render(); toast(n ? `Saved · ${n} entries added` : 'Saved');
+    let fixed = 0;
+    if (MODAL.id) {
+      Object.assign(S.recurring.find(x => x.id === MODAL.id), data);
+      // Entries this item already added keep their old values unless you choose to update them.
+      const old = S.transactions.filter(t => t.recId === MODAL.id && (t.amount !== amount || t.desc !== desc || t.type !== type || t.cat !== data.cat));
+      if (old.length && confirm(`${old.length} ${old.length === 1 ? 'entry' : 'entries'} already added by “${desc}” ${old.length === 1 ? 'has' : 'have'} different details (e.g. ${yen(old[0].amount)} on ${old[0].date}). Update ${old.length === 1 ? 'it' : 'them'} to ${yen(amount)} too?`)) {
+        for (const t of old) { Object.assign(t, { amount, desc, type, cat: data.cat, u: now() }); fixed++; }
+      }
+    } else S.recurring.push({ id: uid(), ...data });
+    save(); const n = applyRecurring(); closeModal(); render();
+    toast([n ? `${n} entries added` : '', fixed ? `${fixed} updated` : ''].filter(Boolean).join(' · ') || 'Saved');
   },
   recDelete: () => { if (!confirm('Delete this regular item? Entries already added stay in your history.')) return; S.recurring = S.recurring.filter(x => x.id !== MODAL.id); save(); closeModal(); render(); },
   catAdd: () => { S.categories.push({ id: uid(), name: 'New category', color: '#' + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0'), budget: 0 }); save(); render(); },
@@ -822,8 +870,14 @@ const ACT = {
     S.rules = S.rules.filter(r => r.cat !== c.id); S.categories = S.categories.filter(x => x.id !== c.id); save(); render();
   },
   ruleAdd: () => { const kw = $('#newKw').value, cat = $('#newKwCat').value; if (!norm(kw) || cat === 'uncat') return toast('Enter text and pick a category'); const n = addUserRule(kw, cat); save(); render(); toast(n ? `Rule added · ${n} entries sorted` : 'Rule added'); },
-  ruleDel: el => { S.rules = S.rules.filter(r => r.id !== el.dataset.id); save(); render(); },
+  ruleDel: el => { const r0 = S.rules.find(r => r.id === el.dataset.id); if (r0 && r0.builtin) S.removedBuiltins.push(r0.keyword); S.rules = S.rules.filter(r => r.id !== el.dataset.id); save(); render(); },
   recatAll: () => { let n = 0; for (const t of S.transactions) if (t.type === 'expense' && t.cat === 'uncat') { const c = categorize(t.desc); if (c !== 'uncat') { t.cat = c; t.u = now(); n++; } } save(); render(); toast(`${n} entries sorted`); },
+  accDel: el => {
+    const a = el.dataset.acc, list = S.transactions.filter(t => t.source === 'import' && (t.account || '(no name)') === a);
+    if (!confirm(`Remove all ${list.length} entries imported from “${a}”? Your manual entries and regular items are not affected.`)) return;
+    const ts = now(); for (const t of list) S.deleted[t.id] = ts;
+    const ids = new Set(list.map(t => t.id)); S.transactions = S.transactions.filter(t => !ids.has(t.id)); save(); render(); toast(`Removed ${list.length} entries`);
+  },
   syncSave: () => { S.settings.lastBackup = todayStr(); save(); exportFile('my-budget-sync.json', JSON.stringify(S), 'application/json'); render(); },
   syncMerge: () => { $('#fileSync').value = ''; $('#fileSync').click(); },
   exportJson: () => { S.settings.lastBackup = todayStr(); save(); exportFile(`my-budget-backup-${todayStr()}.json`, JSON.stringify(S, null, 1), 'application/json'); render(); },
