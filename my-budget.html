@@ -302,6 +302,7 @@ function bankStatus() {
   }
   return { start: +B.amount || 0, date: B.date, inc, workIn, out, now: now_, upcoming, endOfMonth: now_ + upcoming };
 }
+const accountNames = () => [...new Set(S.transactions.map(t => (t.account || '').trim()).filter(Boolean))].sort();
 const tripNames = () => [...new Set(S.transactions.map(t => (t.trip || '').trim()).filter(Boolean))].sort();
 const totalBudget = () => S.categories.reduce((a, c) => a + (+c.budget || 0), 0);
 
@@ -468,7 +469,7 @@ function buildImportItems() {
 }
 
 /* ---------- UI state ---------- */
-const UI = { view: 'overview', month: curYm(), search: '', filterCat: 'all', sumWeek: null, imp: null };
+const UI = { view: 'overview', month: curYm(), search: '', filterCat: 'all', filterAcc: 'all', sumWeek: null, imp: null };
 let MODAL = null;
 
 function render() {
@@ -533,6 +534,11 @@ function vOverview() {
       ${trips.slice(0, 8).map(tripCard).join('')}
       <button class="link small" data-act="showWork" style="margin-top:8px">See all work entries →</button></div>`;
   }
+  const byAcc = {};
+  for (const t of st.tx) if (t.type === 'expense' && t.account) { byAcc[t.account] = byAcc[t.account] || { all: 0, work: 0 }; byAcc[t.account].all += t.amount; if (t.cat === 'work') byAcc[t.account].work += t.amount; }
+  const accKeys = Object.keys(byAcc).sort((a, b) => byAcc[b].all - byAcc[a].all);
+  if (accKeys.length) html += `<div class="card"><h3>💳 By card</h3>${accKeys.map(a => `<div class="row" style="padding:5px 0;cursor:pointer" data-act="showAcc" data-acc="${esc(a)}"><span>${esc(a)}</span><span class="grow"></span>${byAcc[a].work ? `<span class="small muted">incl. work ${yen(byAcc[a].work)}&nbsp;</span>` : ''}<b>${yen(byAcc[a].all)}</b>&nbsp;<span class="muted">›</span></div>`).join('')}
+    <div class="small muted" style="margin-top:4px">Everything charged to each card this month, by purchase date. Tap a card to see its entries.</div></div>`;
   html += `<div class="card"><h3>By category</h3>${rows.length ? rows.join('') : '<div class="muted small">Nothing yet this month.</div>'}</div>`;
   // weekly summary
   const which = UI.sumWeek ?? si.which;
@@ -589,11 +595,12 @@ function vTx() {
   return monthBar() + `<div class="card"><div class="row" style="gap:8px;flex-wrap:wrap">
     <input id="txSearch" data-inp="search" placeholder="Search" value="${esc(UI.search)}" style="flex:2;min-width:140px">
     <select data-chg="filterCat" style="flex:1;min-width:130px"><option value="all">All categories</option><option value="income"${UI.filterCat === 'income' ? ' selected' : ''}>Income</option>${catOptions(UI.filterCat)}</select>
+    ${accountNames().length ? `<select data-chg="filterAcc" style="flex:1;min-width:130px"><option value="all">All cards & accounts</option>${accountNames().map(a => `<option value="${esc(a)}"${UI.filterAcc === a ? ' selected' : ''}>💳 ${esc(a)}</option>`).join('')}<option value="__none"${UI.filterAcc === '__none' ? ' selected' : ''}>No card (manual / regular)</option></select>` : ''}
     <button class="primary" data-act="addTx">+ Add</button></div><div id="txList"></div></div>`;
 }
 function renderTxList() {
   const q = norm(UI.search);
-  const list = S.transactions.filter(t => t.date.startsWith(UI.month) && (UI.filterCat === 'all' || t.cat === UI.filterCat) && (!q || norm(t.desc + ' ' + (t.note || '') + ' ' + (t.account || '') + ' ' + (t.trip || '')).includes(q)))
+  const list = S.transactions.filter(t => t.date.startsWith(UI.month) && (UI.filterCat === 'all' || t.cat === UI.filterCat) && (UI.filterAcc === 'all' || (UI.filterAcc === '__none' ? !t.account : t.account === UI.filterAcc)) && (!q || norm(t.desc + ' ' + (t.note || '') + ' ' + (t.account || '') + ' ' + (t.trip || '')).includes(q)))
     .sort((a, b) => b.date.localeCompare(a.date) || a.desc.localeCompare(b.desc));
   let spent = 0, inc = 0, work = 0, back = 0;
   list.forEach(t => { if (t.type === 'income') inc += t.amount; else if (t.type === 'advance' || t.type === 'reimb') back += t.amount; else if (t.type === 'return') back -= t.amount; else if (t.cat === 'work') work += t.amount; else spent += t.amount; });
@@ -622,7 +629,7 @@ function openTxModal(id) {
     ${S.debts.length ? `<label id="m_debtwrap">Pays off debt (optional)<select id="m_debt"><option value="">—</option>${S.debts.map(d => `<option value="${d.id}"${d.id === t.debtId ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>` : ''}
     <label id="m_tripwrap">Business trip name (the trip the company pays back — not a category)<input id="m_trip" list="tripList" value="${esc(t.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
     <div id="m_preview" class="small" hidden style="background:var(--accent-soft);border-radius:10px;padding:10px;margin-bottom:10px"></div>
-    <div class="grid2"><label>Account / card<input id="m_account" value="${esc(t.account || '')}" placeholder="optional"></label>
+    <div class="grid2"><label>Account / card<input id="m_account" list="accList" value="${esc(t.account || '')}" placeholder="optional"><datalist id="accList">${accountNames().map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>
     <label>Note<input id="m_note" value="${esc(t.note || '')}" placeholder="optional"></label></div>
     <div id="m_rule" hidden style="background:var(--bg);border-radius:10px;padding:10px;margin-bottom:6px">
       <label class="check"><input type="checkbox" id="m_remember" checked> Remember this category next time</label>
@@ -689,6 +696,25 @@ function vImport() {
     <div class="actions"><button data-act="impCancel">Cancel</button><span class="grow"></span><button class="primary" data-act="impDo"${n ? '' : ' disabled'}>Import ${n} entries</button></div></div>`;
   return html;
 }
+// Work out which card a statement is from, using its layout, any card name inside it, and the file name.
+function detectCard(rows, det, fileName) {
+  const top = rows.slice(0, Math.max(1, det.firstRow || 0)).flat().map(norm).join(' ');
+  const hdr = det.header ? norm(det.header.join('|')) : '';
+  const fn = norm(fileName);
+  const named = (() => { for (const r of rows.slice(0, 8)) { const i = r.findIndex(c => /カード名称|カード名/.test(norm(c))); if (i >= 0 && r[i + 1]) return norm(r[i + 1]); } return ''; })();
+  const all = [named, top, fn].join(' ');
+  if (/タカシマヤ|高島屋|TAKASHIMAYA/.test(all)) return 'Takashimaya Card';
+  if (/JAL/.test(all)) return 'JAL Card';
+  if (/AMEX|アメリカン|AMERICAN EXPRESS|マリオット|MARRIOTT|BONVOY/.test(all)) return 'Amex';
+  if (/楽天|RAKUTEN/.test(all)) return 'Rakuten Card';
+  if (/三井住友|SMBC/.test(all)) return 'SMBC Card';
+  if (/データ処理日/.test(hdr) && /会員/.test(hdr)) return 'Amex';                // Amex Japan layout
+  if (/確定情報/.test(hdr) && /何回目/.test(hdr)) return 'JAL Card';               // NICOS layout (your JAL Mastercard)
+  if (/ご利用店名及び商品名/.test(hdr) && /締前入金区分/.test(hdr)) return 'Takashimaya Card'; // Saison layout
+  if (/利用店名・商品名/.test(hdr) && /支払方法/.test(hdr)) return 'Rakuten Card';
+  if (named) return named;
+  return fileName.replace(/\.[^.]+$/, '');
+}
 async function handleCsvFile(file) {
   const buf = await file.arrayBuffer();
   const { text, enc } = decodeFile(buf);
@@ -699,7 +725,7 @@ async function handleCsvFile(file) {
   const sig = importSignature(rows, det), saved = S.importMaps[sig];
   UI.imp = { fileName: file.name, enc, rows, det, sig,
     map: saved ? { dateCol: saved.dateCol, descCol: saved.descCol, amountCol: saved.amountCol } : { dateCol: det.dateCol, descCol: det.descCol, amountCol: det.amountCol },
-    mode: saved ? saved.mode : 'card', account: saved ? saved.account : file.name.replace(/\.[^.]+$/, '') };
+    mode: saved ? saved.mode : 'card', account: saved ? saved.account : detectCard(rows, det, file.name) };
   buildImportItems(); render();
 }
 
@@ -799,9 +825,9 @@ function vSettings() {
       <ol class="small" style="padding-left:18px;margin:0 0 10px"><li><b>Merge</b> the latest sync file from iCloud Drive (if there is one).</li><li>Make your changes.</li><li><b>Save sync file</b> → Save to Files → iCloud Drive, replacing the old one.</li></ol>
       <div class="btns"><button class="primary" data-act="syncSave">Save sync file</button><button data-act="syncMerge">Merge from another device</button></div></div>
     <div class="card"><h3>Imported statements</h3>
-      <p class="small muted" style="margin-top:0">Imported something wrongly? Remove everything from one card, then import it again.</p>
+      <p class="small muted" style="margin-top:0">Rename a card (e.g. “activity” → “Amex”), or remove everything from one card and import it again.</p>
       ${(() => { const acc = {}; for (const t of S.transactions) if (t.source === 'import') { const a = t.account || '(no name)'; acc[a] = (acc[a] || 0) + 1; }
-        const ks = Object.keys(acc).sort(); return ks.length ? ks.map(a => `<div class="row" style="padding:4px 0"><span>${esc(a)}</span><span class="grow"></span><span class="muted small">${acc[a]} entries</span>&nbsp;<button class="danger" data-act="accDel" data-acc="${esc(a)}" style="padding:4px 10px">Remove</button></div>`).join('') : '<div class="muted small">Nothing imported yet.</div>'; })()}
+        const ks = Object.keys(acc).sort(); return ks.length ? ks.map(a => `<div class="row" style="padding:4px 0"><span>${esc(a)}</span><span class="grow"></span><span class="muted small">${acc[a]} entries</span>&nbsp;<button data-act="accRename" data-acc="${esc(a)}" style="padding:4px 10px">Rename</button>&nbsp;<button class="danger" data-act="accDel" data-acc="${esc(a)}" style="padding:4px 10px">Remove</button></div>`).join('') : '<div class="muted small">Nothing imported yet.</div>'; })()}
     </div>
     <div class="card"><h3>Backup</h3>
       <p class="small muted" style="margin-top:0">Your data lives only in this browser on this device. If you clear browser data, it's gone — export a backup now and then and keep it somewhere safe.
@@ -889,6 +915,7 @@ const ACT = {
   showUncat: () => { UI.view = 'tx'; UI.filterCat = 'uncat'; render(); },
   tripSettle: el => { S.tripMeta[el.dataset.trip] = { settled: true, date: todayStr() }; save(); render(); toast('Trip marked as settled'); },
   tripReopen: el => { delete S.tripMeta[el.dataset.trip]; save(); render(); },
+  showAcc: el => { UI.view = 'tx'; UI.filterCat = 'all'; UI.filterAcc = el.dataset.acc; render(); },
   showWork: () => { UI.view = 'tx'; UI.filterCat = 'work'; render(); },
   addTx: () => openTxModal(null),
   editTx: el => openTxModal(el.dataset.id),
@@ -967,6 +994,14 @@ const ACT = {
   },
   debtDelete: () => { if (!confirm('Delete this debt? Your payment entries stay.')) return; S.debts = S.debts.filter(x => x.id !== MODAL.id); save(); closeModal(); render(); },
   bankClear: () => { S.bank = null; save(); render(); },
+  accRename: el => {
+    const old = el.dataset.acc, name = (prompt(`New name for “${old}”:`, old) || '').trim();
+    if (!name || name === old) return;
+    let n = 0; for (const t of S.transactions) if ((t.account || '(no name)') === old) { t.account = name; t.u = now(); n++; }
+    for (const m of Object.values(S.importMaps)) if (m.account === old) m.account = name;
+    if (UI.filterAcc === old) UI.filterAcc = name;
+    save(); render(); toast(`Renamed · ${n} entries`);
+  },
   accDel: el => {
     const a = el.dataset.acc, list = S.transactions.filter(t => t.source === 'import' && (t.account || '(no name)') === a);
     if (!confirm(`Remove all ${list.length} entries imported from “${a}”? Your manual entries and regular items are not affected.`)) return;
@@ -987,6 +1022,7 @@ const ACT = {
 };
 const CHG = {
   filterCat: el => { UI.filterCat = el.value; renderTxList(); },
+  filterAcc: el => { UI.filterAcc = el.value; renderTxList(); },
   mType: () => syncTxModal(),
   mCat: el => { $('#m_rule').hidden = el.value === MODAL.origCat || el.value === 'uncat'; syncTxModal(); },
   rType: el => { $('#r_catwrap').hidden = el.value === 'income'; },
