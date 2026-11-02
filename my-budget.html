@@ -133,17 +133,17 @@ const DEFAULT_CATEGORIES = [
 const DEFAULT_RULES = {
   'Groceries':['オオゼキ','京王ストア','フードショー','(食料品)','食品館','肉のハナマサ','イオン','AEON','イトーヨーカドー','ITO YOKADO','ライフ','西友','SEIYU','マルエツ','オーケー','業務スーパー','コープ','生協','成城石井','まいばすけっと','サミット','ヤオコー','ベルク','いなげや','東急ストア','スーパー','SUPERMARKET','コストコ','COSTCO'],
   'Convenience stores':['セブン-イレブン','セブンイレブン','セブン','SEVEN-ELEVEN','7-ELEVEN','ファミリーマート','FAMILYMART','ファミマ','ローソン','LAWSON','ミニストップ','MINISTOP','デイリーヤマザキ','セイコーマート','NEWDAYS'],
-  'Dining out':['マクドナルド','MCDONALD','スターバックス','STARBUCKS','ドトール','DOUTOR','タリーズ','TULLY','コメダ','すき家','吉野家','松屋','ガスト','サイゼリヤ','ケンタッキー','KFC','モスバーガー','くら寿司','スシロー','はま寿司','UBER EATS','UBEREATS','出前館','WOLT','居酒屋','レストラン','RESTAURANT','カフェ','CAFE','珈琲','ラーメン','食堂','焼肉'],
-  'Transport':['JR','SUICA','スイカ','PASMO','パスモ','メトロ','METRO','鉄道','電鉄','タクシー','TAXI','ENEOS','エネオス','出光','IDEMITSU','コスモ石油','ガソリン','ETC','駐車','パーキング','PARKING','タイムズ','UBER'],
+  'Dining out':['LUNCH','DINNER','BREAKFAST','COFFEE','ランチ','昼食','夕食','飲み会','外食','マクドナルド','MCDONALD','スターバックス','STARBUCKS','ドトール','DOUTOR','タリーズ','TULLY','コメダ','すき家','吉野家','松屋','ガスト','サイゼリヤ','ケンタッキー','KFC','モスバーガー','くら寿司','スシロー','はま寿司','UBER EATS','UBEREATS','出前館','WOLT','居酒屋','レストラン','RESTAURANT','カフェ','CAFE','珈琲','ラーメン','食堂','焼肉'],
+  'Transport':['TRAIN','電車','バス代','GASOLINE','JR','SUICA','スイカ','PASMO','パスモ','メトロ','METRO','鉄道','電鉄','タクシー','TAXI','ENEOS','エネオス','出光','IDEMITSU','コスモ石油','ガソリン','ETC','駐車','パーキング','PARKING','タイムズ','UBER'],
   'Housing':['家賃','管理費','不動産','賃料','共益費'],
   'Utilities':['電力','TEPCO','電気','ガス','東京ガス','大阪ガス','水道','NHK','デンリョク','デンリヨク','トウキョウガス','オオサカガス','スイドウ'],
   'Phone & internet':['DOCOMO','ドコモ','KDDI','SOFTBANK','ソフトバンク','楽天モバイル','RAKUTEN MOBILE','ワイモバイル','Y!MOBILE','UQ','AHAMO','POVO','LINEMO','NURO','IIJ','MINEO','フレッツ','BIGLOBE','ビッグローブ'],
   'Subscriptions':['NETFLIX','SPOTIFY','AMAZON PRIME','アマゾンプライム','PRIME VIDEO','APPLE.COM','ITUNES','GOOGLE PLAY','GOOGLE ONE','YOUTUBE','DISNEY','U-NEXT','ABEMA','HULU','DAZN','ADOBE','MICROSOFT','OPENAI','CHATGPT','ANTHROPIC','CLAUDE.AI','DROPBOX','ICLOUD'],
   'Shopping':['AMAZON','アマゾン','楽天','RAKUTEN','ユニクロ','UNIQLO','ニトリ','無印','MUJI','ヨドバシ','YODOBASHI','ビックカメラ','BIC CAMERA','ヤマダ電機','ダイソー','DAISO','ドン・キホーテ','ドンキ','DON QUIJOTE','ZOZO','メルカリ','MERCARI','セリア','ロフト','LOFT','ハンズ','百貨店','三越','伊勢丹','高島屋','大丸','パルコ','ルミネ'],
-  'Health':['薬局','ドラッグ','DRUG','マツモトキヨシ','マツキヨ','ウエルシア','ツルハ','スギ薬局','サンドラッグ','ココカラファイン','病院','クリニック','CLINIC','HOSPITAL','歯科','医院','整骨','調剤'],
+  'Health':['MEDICINE','PHARMACY','DOCTOR','薬局','ドラッグ','DRUG','マツモトキヨシ','マツキヨ','ウエルシア','ツルハ','スギ薬局','サンドラッグ','ココカラファイン','病院','クリニック','CLINIC','HOSPITAL','歯科','医院','整骨','調剤'],
   'Entertainment':['映画','TOHO','シネマ','CINEMA','カラオケ','STEAM','NINTENDO','任天堂','PLAYSTATION','ゲーム','チケット','TICKET','ぴあ','イープラス','ローチケ'],
   'Travel':['MARRIOTT','マリオット','BONVOY','WESTIN','ウェスティン','SHERATON','シェラトン','RITZ','東横イン','アパホテル','ホテル','HOTEL','旅館','JAL','日本航空','全日空','AIRBNB','BOOKING.COM','楽天トラベル','じゃらん','JALAN','EXPEDIA','AGODA','新幹線','PEACH','ジェットスター','JETSTAR'],
-  'Other':['年会費','カード会費','ANNUAL FEE','MEMBERSHIP FEE'],
+  'Other':['HAIRCUT','美容院','美容室','床屋','ヘアカット','年会費','カード会費','ANNUAL FEE','MEMBERSHIP FEE'],
   'Insurance':['保険','生命','損保','損害','共済'],
   'Education':['書店','紀伊國屋','紀伊国屋','ジュンク堂','丸善','TSUTAYA','蔦屋','学校','スクール','SCHOOL','塾','UDEMY','KINDLE','英会話']
 };
@@ -294,7 +294,7 @@ function billDateOf(t) {
   if (t.billDate) return t.billDate;
   const c = S.cards[t.account];
   if (!c || !c.close || !c.pay) return null;
-  const [y, m, d] = t.date.split('-').map(Number);
+  const [y, m, d] = (t.postDate || t.date).split('-').map(Number); // cards like Amex bill by processing date
   let ym = `${y}-${pad(m)}`;
   const closeDay = Math.min(c.close, daysInMonth(ym));
   if (d > closeDay) ym = addMonths(ym, 1);
@@ -334,6 +334,29 @@ function bankStatus() {
   return { start: +B.amount || 0, date: B.date, inc, workIn, out, billsPaid, now: now_, bills, billsTotal, afterBills: now_ - billsTotal, upcoming, endOfMonth: now_ + upcoming, unknown };
 }
 const accountNames = () => [...new Set(S.transactions.map(t => (t.account || '').trim()).filter(Boolean))].sort();
+// ----- Quick add: one entry per line, e.g. "1200 lunch", "yesterday 3,400 groceries", "+50000 bonus", "10/28 800 taxi @Suica" -----
+function parseQuick(line) {
+  let t = line.normalize('NFKC').trim(); if (!t) return null;
+  const today = new Date(); today.setHours(0, 0, 0, 0); let date = ymd(today), m;
+  if ((m = t.match(/^(yesterday|昨日)\s*/i))) { const d = new Date(today); d.setDate(d.getDate() - 1); date = ymd(d); t = t.slice(m[0].length); }
+  else if ((m = t.match(/^(today|今日)\s*/i))) t = t.slice(m[0].length);
+  else if ((m = t.match(/^(\d{1,2})\s*[\/月]\s*(\d{1,2})\s*日?\s+/))) { let y = today.getFullYear(); const cand = `${y}-${pad(+m[1])}-${pad(+m[2])}`; date = cand > ymd(today) ? `${y - 1}-${pad(+m[1])}-${pad(+m[2])}` : cand; t = t.slice(m[0].length); }
+  let account = 'Cash';
+  t = t.replace(/@(\S+)/, (_, a) => { account = a; return ''; }).trim();
+  m = t.match(/([+]?)\s*[¥]?\s*(\d[\d,]*(?:\.\d+)?)\s*(k|千|万|円|yen)?/i);
+  if (!m) return { error: line };
+  let amount = parseFloat(m[2].replace(/,/g, ''));
+  const unit = (m[3] || '').toLowerCase(); if (unit === 'k' || unit === '千') amount *= 1000; if (unit === '万') amount *= 10000;
+  let desc = (t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim();
+  const income = m[1] === '+' || /^(income|収入|給料|salary)\b/i.test(desc);
+  if (!amount) return { error: line };
+  // Category: a category name typed in the line wins (e.g. "groceries"), otherwise the shop rules.
+  let cat = 'uncat';
+  const nd = norm(desc), named = S.categories.find(c => nd && (nd === norm(c.name) || nd.split(' ').includes(norm(c.name))));
+  if (named) cat = named.id; else cat = categorize(desc);
+  if (/^(work|仕事)\b/i.test(desc)) cat = 'work';
+  return { date, desc: desc || (income ? 'Income' : 'Cash spending'), amount: Math.round(amount), type: income ? 'income' : 'expense', cat: income ? 'income' : cat, account: income ? '' : account };
+}
 const tripNames = () => [...new Set(S.transactions.map(t => (t.trip || '').trim()).filter(Boolean))].sort();
 const totalBudget = () => S.categories.reduce((a, c) => a + (+c.budget || 0), 0);
 
@@ -470,14 +493,16 @@ function detectMapping(rows) {
   const instCol = header ? header.findIndex(c => /何回目|回目/.test(norm(c))) : -1;
   const countCol = header ? header.findIndex(c => /支払回数/.test(norm(c))) : -1;
   const payDateCol = header ? header.findIndex((c, i) => i !== dateCol && /支払日/.test(norm(c))) : -1;
-  return { dateCol, descCol, amountCol, instCol, countCol, payDateCol, header, ncol, firstRow: firstAny };
+  const postCol = header ? header.findIndex((c, i) => i !== dateCol && /処理日|計上日|POSTING|POSTED/.test(norm(c))) : -1;
+  return { dateCol, descCol, amountCol, instCol, countCol, payDateCol, postCol, header, ncol, firstRow: firstAny };
 }
 function importSignature(rows, det) { return 'v2:' + (det.header ? norm(det.header.join('|')).slice(0, 200) : 'cols:' + det.ncol); }
 const PAYMENT_RE = /お支払いありがとう|お支払い ありがとう|ご入金|口座振替|口座引落|お振込|PAYMENT RECEIVED|THANK YOU|AUTOPAY|返済/;
 function buildImportItems() {
   const I = UI.imp; const { dateCol, descCol, amountCol } = I.map;
   const existing = {};
-  for (const t of S.transactions) { const k = t.date + '|' + norm(t.desc) + '|' + t.amount + '|' + t.type; existing[k] = (existing[k] || 0) + 1; }
+  const existingIds = {};
+  for (const t of S.transactions) { const k = t.date + '|' + norm(t.desc) + '|' + t.amount + '|' + t.type; existing[k] = (existing[k] || 0) + 1; (existingIds[k] = existingIds[k] || []).push(t.id); }
   I.items = []; I.hasInst = false;
   const dates = I.rows.map(r => parseDate(r[dateCol])).filter(Boolean).sort();
   const lastDate = dates[dates.length - 1];
@@ -500,6 +525,8 @@ function buildImportItems() {
     const cleanDesc = dn.replace(/\s*\d+\s*回払い\s*(\d+\s*回目)?/, '').replace(/\s+/g, ' ').trim() || desc;
     const k = date + '|' + norm(cleanDesc) + '|' + amount + '|' + type;
     const dup = existing[k] > 0; if (dup) existing[k]--;
+    const dupOf = dup ? existingIds[k][existing[k]] : null;
+    const postDate = I.det.postCol >= 0 ? parseDate(r[I.det.postCol]) : null;
     const mCount = dn.match(/(\d+)\s*回払い/);
     const instCount = (I.det.countCol >= 0 && parseInt(String(r[I.det.countCol] || '').normalize('NFKC'))) || (mCount ? +mCount[1] : 0);
     if (instNo > 0 && instCount > 1) {
@@ -519,7 +546,7 @@ function buildImportItems() {
     }
     const later = instNo > 1;
     const billDate = (I.det.payDateCol >= 0 && parseDate(r[I.det.payDateCol])) || stmtPay || null;
-    I.items.push({ date, billDate, desc: cleanDesc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(cleanDesc), dup: dup || later, inst: later ? instNo : 0, include: !dup && !later });
+    I.items.push({ date, billDate, postDate, dupOf, desc: cleanDesc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(cleanDesc), dup: dup || later, inst: later ? instNo : 0, include: !dup && !later });
   }
 }
 
@@ -765,7 +792,7 @@ function vImport() {
       <td class="right ${x.type === 'income' ? 'good' : ''}" style="white-space:nowrap">${x.type === 'income' ? '+' : ''}${yen(x.amount)}</td>
       <td>${x.type === 'income' ? 'Income' : `<select data-chg="impCat" data-i="${i}">${catOptions(x.cat)}</select>`}</td></tr>`).join('')}
     </tbody></table>
-    <div class="actions"><button data-act="impCancel">Cancel</button><span class="grow"></span><button class="primary" data-act="impDo"${n ? '' : ' disabled'}>Import ${n} entries</button></div></div>`;
+    <div class="actions"><button data-act="impCancel">Cancel</button><span class="grow"></span>${(() => { const upd = I.items.filter(x => x.dupOf && x.postDate).length; return `<button class="primary" data-act="impDo"${n || upd ? '' : ' disabled'}>${n ? `Import ${n} entries` : `Update ${upd} existing entries`}</button>`; })()}</div></div>`;
   return html;
 }
 // Work out which card a statement is from, using its layout, any card name inside it, and the file name.
@@ -875,7 +902,7 @@ function vSettings() {
       <label>Starting date<input type="date" data-chg="bankDate" value="${B.date || ''}"></label></div>
       ${B.date ? '<button class="link small" data-act="bankClear">Stop tracking bank balance</button>' : ''}</div>
     <div class="card"><h3>💳 Cards</h3>
-      <p class="small muted" style="margin-top:0">When each card's bill is paid from your bank. Statements that include a payment date (JAL, Takashimaya) fill this in for you; for others (e.g. Amex) set it from your card's terms (〇日締め・翌月〇日払い).</p>
+      <p class="small muted" style="margin-top:0">When each card's bill is paid from your bank. Statements that include a payment date (JAL, Takashimaya) fill this in for you; for others (e.g. Amex) set it from your card's terms (〇日締め・翌月〇日払い). Where a statement has a processing date (Amex データ処理日), the cycle follows that date.</p>
       ${cardNames().length ? cardNames().map(a => { const c = S.cards[a] || {}; const days = (sel, last) => Array.from({ length: 31 }, (_, i) => i + 1).map(d => `<option value="${d}"${+sel === d ? ' selected' : ''}>${d === 31 && last ? 'End of month' : d}</option>`).join('');
         return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="row"><b>${esc(a)}</b><span class="grow"></span>${c.guessed ? '<span class="chip">estimated from statement — check</span>' : ''}</div>
           <div class="grid2" style="grid-template-columns:1fr 1fr 1fr;gap:0 8px;margin-top:6px">
@@ -999,6 +1026,16 @@ const ACT = {
   tripReopen: el => { delete S.tripMeta[el.dataset.trip]; save(); render(); },
   byCardMode: el => { S.settings.byCardMode = el.dataset.m; save(); render(); },
   showAcc: el => { UI.view = 'tx'; UI.filterCat = 'all'; UI.filterAcc = el.dataset.acc; UI.billView = S.settings.byCardMode === 'bill'; render(); },
+  quickAdd: () => {
+    const lines = $('#quickText').value.split(/\n+/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return toast('Type something like “1200 lunch”');
+    const added = [], bad = [];
+    for (const l of lines) { const q = parseQuick(l); if (!q || q.error) { bad.push(l); continue; }
+      const t = { id: uid(), u: now(), source: 'manual', note: '', trip: '', ...q }; S.transactions.push(t); added.push(t.id); }
+    UI.lastQuick = added; save(); render();
+    if (bad.length) { $('#quickText').value = bad.join('\n'); toast(`Added ${added.length} · couldn't read ${bad.length} (no amount)`); } else toast(`Added ${added.length}`);
+  },
+  quickUndo: () => { const ids = new Set(UI.lastQuick || []); const ts = now(); for (const id of ids) S.deleted[id] = ts; S.transactions = S.transactions.filter(t => !ids.has(t.id)); UI.lastQuick = []; save(); render(); toast('Undone'); },
   billViewOff: () => { UI.billView = false; renderTxList(); },
   showWork: () => { UI.view = 'tx'; UI.filterCat = 'work'; render(); },
   addTx: () => openTxModal(null),
@@ -1028,7 +1065,10 @@ const ACT = {
     const I = UI.imp; let n = 0;
     const seen = {};
     for (const x of I.items) if (x.include) { const base = 'i_' + hashStr([x.date, norm(x.desc), x.amount, x.type, norm(I.account)].join('|')); seen[base] = (seen[base] || 0) + 1;
-      S.transactions.push({ id: base + '_' + seen[base], u: now(), date: x.date, ...(x.billDate && x.type === 'expense' ? { billDate: x.billDate } : {}), desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
+      S.transactions.push({ id: base + '_' + seen[base], u: now(), date: x.date, ...(x.billDate && x.type === 'expense' ? { billDate: x.billDate } : {}), ...(x.postDate ? { postDate: x.postDate } : {}), desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
+    let filled = 0;
+    for (const x of I.items) if (x.dupOf && (x.postDate || x.billDate)) { const t = S.transactions.find(y => y.id === x.dupOf); if (t && ((x.postDate && !t.postDate) || (x.billDate && !t.billDate))) { if (x.postDate) t.postDate = x.postDate; if (x.billDate) t.billDate = x.billDate; t.u = now(); filled++; } }
+    if (!n && filled) { save(); UI.imp = null; render(); toast(`Updated dates on ${filled} existing entries`); return; }
     S.importMaps[I.sig] = { ...I.map, mode: I.mode, instMode: I.instMode, account: I.account };
     const acc = I.account.trim(), withBill = I.items.filter(x => x.include && x.billDate && !x.instInfo);
     if (acc && withBill.length && !(S.cards[acc] && S.cards[acc].close)) {
