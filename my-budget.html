@@ -164,7 +164,7 @@ function load() {
   catch (e) { S = defaultState(); }
   const d = defaultState();
   for (const k of ['categories','transactions','recurring','rules']) if (!Array.isArray(S[k])) S[k] = d[k];
-  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.debts)) S.debts = []; S.bank = S.bank || null; if (!Array.isArray(S.contacts)) S.contacts = [];
+  S.applied = S.applied || {}; S.importMaps = S.importMaps || {}; S.tripMeta = S.tripMeta || {}; S.deleted = S.deleted || {}; if (!Array.isArray(S.debts)) S.debts = []; S.bank = S.bank || null; S.cards = S.cards || {}; if (!Array.isArray(S.contacts)) S.contacts = [];
   S.settings = Object.assign(d.settings, S.settings || {});
   // Add any built-in shop keywords introduced in newer versions (unless the user removed them).
   S.removedBuiltins = S.removedBuiltins || [];
@@ -283,24 +283,55 @@ function debtStatus(d) {
 }
 // Estimated bank balance: starting amount, plus money in, minus everything spent since that date
 // (card purchases are taken off straight away, as if already paid).
+// ----- Card billing -----
+// Cards = names of accounts that came from statements, or that have billing days set.
+const cardNames = () => [...new Set([...S.transactions.filter(t => t.source === 'import' && t.account).map(t => t.account), ...Object.keys(S.cards)])].sort();
+const isCard = a => !!a && (!!S.cards[a] || S.transactions.some(t => t.source === 'import' && t.account === a));
+// When a purchase is paid from the bank: the statement's own payment date if we have it,
+// otherwise worked out from the card's closing day and payment day.
+function billDateOf(t) {
+  if (t.type !== 'expense') return null;
+  if (t.billDate) return t.billDate;
+  const c = S.cards[t.account];
+  if (!c || !c.close || !c.pay) return null;
+  const [y, m, d] = t.date.split('-').map(Number);
+  let ym = `${y}-${pad(m)}`;
+  const closeDay = Math.min(c.close, daysInMonth(ym));
+  if (d > closeDay) ym = addMonths(ym, 1);
+  const payYm = addMonths(ym, c.offset || 1);
+  return `${payYm}-${pad(Math.min(c.pay, daysInMonth(payYm)))}`;
+}
+// Bank estimate (cash view): start + income + money from work − bank payments − card bills on the day they're paid.
 function bankStatus() {
   const B = S.bank; if (!B || !B.date) return null;
-  const today = todayStr(); let inc = 0, out = 0, workIn = 0;
+  const today = todayStr(); let inc = 0, out = 0, workIn = 0, billsPaid = 0; const up = {};
   for (const t of S.transactions) {
-    if (t.date < B.date || t.date > today) continue;
-    if (t.type === 'income') inc += t.amount;
-    else if (t.type === 'advance' || t.type === 'reimb') workIn += t.amount;
-    else if (t.type === 'return') workIn -= t.amount;
-    else out += t.amount;
+    if (t.type === 'income' || WORK_TYPES.includes(t.type)) {
+      if (t.date < B.date || t.date > today) continue;
+      if (t.type === 'income') inc += t.amount; else workIn += t.type === 'return' ? -t.amount : t.amount;
+      continue;
+    }
+    const bd = billDateOf(t);
+    if (bd) {
+      if (bd < B.date) continue;
+      if (bd <= today) billsPaid += t.amount;
+      else { const k = t.account + '|' + bd; up[k] = (up[k] || 0) + t.amount; }
+    } else {
+      if (t.date < B.date || t.date > today) continue;
+      out += t.amount;
+    }
   }
-  const now_ = (+B.amount || 0) + inc + workIn - out;
-  // Rest of this month: regular items not yet added.
+  const now_ = (+B.amount || 0) + inc + workIn - out - billsPaid;
+  const bills = Object.entries(up).map(([k, v]) => { const [card, date] = k.split('|'); return { card, date, amount: v }; }).sort((a, b) => a.date.localeCompare(b.date));
+  const billsTotal = bills.reduce((a, b) => a + b.amount, 0);
+  // Regular bank items still to come this month (salary, rent, …) — not ones charged to a card.
   const cym = curYm(), d = new Date().getDate(); let upcoming = 0;
   for (const r of S.recurring) {
-    if (!r.active || (r.startMonth && r.startMonth > cym) || S.applied[r.id + ':' + cym]) continue;
+    if (!r.active || (r.startMonth && r.startMonth > cym) || S.applied[r.id + ':' + cym] || (r.type === 'expense' && isCard(r.account))) continue;
     if (Math.min(r.day || 1, daysInMonth(cym)) > d) upcoming += r.type === 'income' ? +r.amount : -r.amount;
   }
-  return { start: +B.amount || 0, date: B.date, inc, workIn, out, now: now_, upcoming, endOfMonth: now_ + upcoming };
+  const unknown = S.transactions.some(t => t.type === 'expense' && isCard(t.account) && !billDateOf(t) && t.date >= B.date);
+  return { start: +B.amount || 0, date: B.date, inc, workIn, out, billsPaid, now: now_, bills, billsTotal, afterBills: now_ - billsTotal, upcoming, endOfMonth: now_ + upcoming, unknown };
 }
 const accountNames = () => [...new Set(S.transactions.map(t => (t.account || '').trim()).filter(Boolean))].sort();
 const tripNames = () => [...new Set(S.transactions.map(t => (t.trip || '').trim()).filter(Boolean))].sort();
@@ -437,7 +468,9 @@ function detectMapping(rows) {
     if (score > best) { best = score; descCol = i; }
   }
   const instCol = header ? header.findIndex(c => /何回目|回目/.test(norm(c))) : -1;
-  return { dateCol, descCol, amountCol, instCol, header, ncol, firstRow: firstAny };
+  const countCol = header ? header.findIndex(c => /支払回数/.test(norm(c))) : -1;
+  const payDateCol = header ? header.findIndex((c, i) => i !== dateCol && /支払日/.test(norm(c))) : -1;
+  return { dateCol, descCol, amountCol, instCol, countCol, payDateCol, header, ncol, firstRow: firstAny };
 }
 function importSignature(rows, det) { return 'v2:' + (det.header ? norm(det.header.join('|')).slice(0, 200) : 'cols:' + det.ncol); }
 const PAYMENT_RE = /お支払いありがとう|お支払い ありがとう|ご入金|口座振替|口座引落|お振込|PAYMENT RECEIVED|THANK YOU|AUTOPAY|返済/;
@@ -445,10 +478,14 @@ function buildImportItems() {
   const I = UI.imp; const { dateCol, descCol, amountCol } = I.map;
   const existing = {};
   for (const t of S.transactions) { const k = t.date + '|' + norm(t.desc) + '|' + t.amount + '|' + t.type; existing[k] = (existing[k] || 0) + 1; }
-  I.items = [];
+  I.items = []; I.hasInst = false;
   const dates = I.rows.map(r => parseDate(r[dateCol])).filter(Boolean).sort();
   const lastDate = dates[dates.length - 1];
   const startRow = Math.max(0, I.det.firstRow || 0);
+  // Statement-wide payment date from the summary lines at the top (e.g. Saison: お支払日 2026/11/04).
+  let stmtPay = null;
+  for (const r of I.rows.slice(0, startRow)) { const i = r.findIndex(c => /支払日|引落日|お支払い日/.test(norm(c))); if (i >= 0) { const d = r.slice(i + 1).map(parseDate).find(Boolean); if (d) { stmtPay = d; break; } } }
+  I.stmtPay = stmtPay;
   for (const r of I.rows.slice(startRow)) {
     let date = parseDate(r[dateCol]); const a = parseAmount(r[amountCol]), desc = (r[descCol] || '').trim();
     if (!date && a && /年会費|会費|ANNUAL FEE/.test(norm(desc))) date = lastDate; // fees listed without a date
@@ -463,8 +500,26 @@ function buildImportItems() {
     const cleanDesc = dn.replace(/\s*\d+\s*回払い\s*(\d+\s*回目)?/, '').replace(/\s+/g, ' ').trim() || desc;
     const k = date + '|' + norm(cleanDesc) + '|' + amount + '|' + type;
     const dup = existing[k] > 0; if (dup) existing[k]--;
+    const mCount = dn.match(/(\d+)\s*回払い/);
+    const instCount = (I.det.countCol >= 0 && parseInt(String(r[I.det.countCol] || '').normalize('NFKC'))) || (mCount ? +mCount[1] : 0);
+    if (instNo > 0 && instCount > 1) {
+      // This month's instalment (今回お支払分) is the first figure in the extra-info cell, e.g. "27,505 165,039 7,739 110,020".
+      const used = new Set([dateCol, amountCol, descCol, I.det.instCol, I.det.countCol, I.det.payDateCol]);
+      let monthly = 0;
+      r.forEach((c, i) => { if (monthly || used.has(i)) return; const nums = (String(c).normalize('NFKC').match(/\d[\d,]*/g) || []).map(x => +x.replace(/,/g, '')); if (nums.length >= 2 && nums[0] > 0) monthly = nums[0]; });
+      I.hasInst = true;
+      if (I.instMode === 'monthly' && monthly) {
+        const pd = I.det.payDateCol >= 0 && parseDate(r[I.det.payDateCol]) || date;
+        const d2 = `${cleanDesc} (instalment ${instNo}/${instCount})`;
+        const k2 = pd + '|' + norm(d2) + '|' + monthly + '|' + type;
+        const dup2 = existing[k2] > 0; if (dup2) existing[k2]--;
+        I.items.push({ date: pd, billDate: pd, desc: d2, amount: monthly, type, cat: categorize(cleanDesc), dup: dup2, include: !dup2, instInfo: `Full price ${yen(amount)}, bought ${date}` });
+        continue;
+      }
+    }
     const later = instNo > 1;
-    I.items.push({ date, desc: cleanDesc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(cleanDesc), dup: dup || later, inst: later ? instNo : 0, include: !dup && !later });
+    const billDate = (I.det.payDateCol >= 0 && parseDate(r[I.det.payDateCol])) || stmtPay || null;
+    I.items.push({ date, billDate, desc: cleanDesc || '(no description)', amount, type, cat: type === 'income' ? 'income' : categorize(cleanDesc), dup: dup || later, inst: later ? instNo : 0, include: !dup && !later });
   }
 }
 
@@ -509,10 +564,15 @@ function vOverview() {
   if (st.byCat.workloss) rows.push(catRow(WORKLOSS, st.byCat.workloss));
   const bs = bankStatus();
   if (bs) {
+    const mName = monthLabel(curYm()).split(' ')[0];
     html += `<div class="card"><div class="row"><h3 style="margin:0">🏦 Money in the bank</h3><span class="grow"></span><span class="chip">estimate</span></div>
-      <div class="row" style="margin-top:8px"><span>Now</span><span class="grow"></span><b style="font-size:20px" class="${bs.now < 0 ? 'bad' : ''}">${yen(bs.now)}</b></div>
-      <div class="small muted">Since ${dayLabel(bs.date)}: start ${yen(bs.start)} + income ${yen(bs.inc)}${bs.workIn ? ` + from work ${yen(bs.workIn)}` : ''} − spending ${yen(bs.out)}</div>
-      ${bs.upcoming ? `<div class="row small" style="margin-top:6px"><span>End of ${monthLabel(curYm()).split(' ')[0]}, after regular items still to come (${bs.upcoming > 0 ? '+' : '−'}${yen(Math.abs(bs.upcoming))})</span><span class="grow"></span><b>${yen(bs.endOfMonth)}</b></div>` : ''}
+      <div class="row" style="margin-top:8px"><span>In the bank now</span><span class="grow"></span><b style="font-size:20px" class="${bs.now < 0 ? 'bad' : ''}">${yen(bs.now)}</b></div>
+      <div class="small muted">Since ${dayLabel(bs.date)}: start ${yen(bs.start)} + income ${yen(bs.inc)}${bs.workIn ? ` + from work ${yen(bs.workIn)}` : ''}${bs.out ? ` − bank payments ${yen(bs.out)}` : ''}${bs.billsPaid ? ` − card bills paid ${yen(bs.billsPaid)}` : ''}</div>
+      ${bs.bills.length ? `<div style="margin-top:10px" class="small"><b>Card bills still to pay</b></div>
+        ${bs.bills.map(b => `<div class="row small" style="padding:2px 0"><span>💳 ${esc(b.card)} · ${dayLabel(b.date)}</span><span class="grow"></span><span class="bad">−${yen(b.amount)}</span></div>`).join('')}
+        <div class="row" style="margin-top:6px;border-top:1px solid var(--line);padding-top:6px"><span>Left after these bills</span><span class="grow"></span><b class="${bs.afterBills < 0 ? 'bad' : 'good'}">${yen(bs.afterBills)}</b></div>` : ''}
+      ${bs.upcoming ? `<div class="row small" style="margin-top:6px"><span>End of ${mName}, after regular items still to come (${bs.upcoming > 0 ? '+' : '−'}${yen(Math.abs(bs.upcoming))})${bs.bills.some(b => b.date.startsWith(curYm())) ? ' and this month\'s bills' : ''}</span><span class="grow"></span><b>${yen(bs.now + bs.upcoming - bs.bills.filter(b => b.date.startsWith(curYm())).reduce((a, b) => a + b.amount, 0))}</b></div>` : ''}
+      ${bs.unknown ? `<div class="small warn" style="margin-top:6px">Some card purchases have no payment date yet. Set each card's billing days in <button class="link small" data-act="tab" data-view="settings">Settings → Cards</button>.</div>` : ''}
     </div>`;
   } else if (S.transactions.length) html += `<div class="card small">🏦 Want to see how much is left in the bank? Add your starting balance in <button class="link small" data-act="tab" data-view="settings">Settings</button>.</div>`;
   if (S.debts.length) {
@@ -534,11 +594,20 @@ function vOverview() {
       ${trips.slice(0, 8).map(tripCard).join('')}
       <button class="link small" data-act="showWork" style="margin-top:8px">See all work entries →</button></div>`;
   }
+  const billMode = S.settings.byCardMode === 'bill';
   const byAcc = {};
-  for (const t of st.tx) if (t.type === 'expense' && t.account) { byAcc[t.account] = byAcc[t.account] || { all: 0, work: 0 }; byAcc[t.account].all += t.amount; if (t.cat === 'work') byAcc[t.account].work += t.amount; }
+  if (billMode) {
+    for (const t of S.transactions) { if (t.type !== 'expense' || !t.account) continue; const bd = billDateOf(t); if (!bd || !bd.startsWith(UI.month)) continue;
+      const k = t.account; byAcc[k] = byAcc[k] || { all: 0, work: 0, dates: new Set() }; byAcc[k].all += t.amount; byAcc[k].dates.add(bd); if (t.cat === 'work') byAcc[k].work += t.amount; }
+  } else for (const t of st.tx) if (t.type === 'expense' && t.account) { byAcc[t.account] = byAcc[t.account] || { all: 0, work: 0 }; byAcc[t.account].all += t.amount; if (t.cat === 'work') byAcc[t.account].work += t.amount; }
   const accKeys = Object.keys(byAcc).sort((a, b) => byAcc[b].all - byAcc[a].all);
-  if (accKeys.length) html += `<div class="card"><h3>💳 By card</h3>${accKeys.map(a => `<div class="row" style="padding:5px 0;cursor:pointer" data-act="showAcc" data-acc="${esc(a)}"><span>${esc(a)}</span><span class="grow"></span>${byAcc[a].work ? `<span class="small muted">incl. work ${yen(byAcc[a].work)}&nbsp;</span>` : ''}<b>${yen(byAcc[a].all)}</b>&nbsp;<span class="muted">›</span></div>`).join('')}
-    <div class="small muted" style="margin-top:4px">Everything charged to each card this month, by purchase date. Tap a card to see its entries.</div></div>`;
+  const noBillDates = billMode ? cardNames().filter(a => S.transactions.some(t => t.account === a && t.type === 'expense' && !billDateOf(t))) : [];
+  if (accKeys.length || billMode || S.transactions.some(t => t.account)) html += `<div class="card"><div class="row"><h3 style="margin:0">💳 By card</h3><span class="grow"></span>
+    <div class="seg"><button class="${billMode ? '' : 'on'}" data-act="byCardMode" data-m="purchase">Purchases</button><button class="${billMode ? 'on' : ''}" data-act="byCardMode" data-m="bill">Bills</button></div></div>
+    ${accKeys.map(a => `<div class="row" style="padding:6px 0;cursor:pointer" data-act="showAcc" data-acc="${esc(a)}"><span>${esc(a)}${billMode ? `<div class="small muted">paid ${[...byAcc[a].dates].sort().map(d => dayLabel(d)).join(', ')}</div>` : ''}</span><span class="grow"></span>${byAcc[a].work ? `<span class="small muted">incl. work ${yen(byAcc[a].work)}&nbsp;</span>` : ''}<b>${yen(byAcc[a].all)}</b>&nbsp;<span class="muted">›</span></div>`).join('') || '<div class="small muted" style="padding:6px 0">Nothing this month.</div>'}
+    ${accKeys.length > 1 ? `<div class="row" style="border-top:1px solid var(--line);padding-top:6px"><span>Total</span><span class="grow"></span><b>${yen(accKeys.reduce((x, a) => x + byAcc[a].all, 0))}</b></div>` : ''}
+    <div class="small muted" style="margin-top:4px">${billMode ? `Card bills paid from your bank in ${monthLabel(UI.month)} — should match each card's 請求額.` : 'Everything charged to each card this month, by purchase date.'} Tap a card to see its entries.</div>
+    ${noBillDates.length ? `<div class="small warn" style="margin-top:4px">No payment dates yet for: ${noBillDates.map(esc).join(', ')}. Set billing days in <button class="link small" data-act="tab" data-view="settings">Settings → Cards</button>.</div>` : ''}</div>`;
   html += `<div class="card"><h3>By category</h3>${rows.length ? rows.join('') : '<div class="muted small">Nothing yet this month.</div>'}</div>`;
   // weekly summary
   const which = UI.sumWeek ?? si.which;
@@ -600,11 +669,12 @@ function vTx() {
 }
 function renderTxList() {
   const q = norm(UI.search);
-  const list = S.transactions.filter(t => t.date.startsWith(UI.month) && (UI.filterCat === 'all' || t.cat === UI.filterCat) && (UI.filterAcc === 'all' || (UI.filterAcc === '__none' ? !t.account : t.account === UI.filterAcc)) && (!q || norm(t.desc + ' ' + (t.note || '') + ' ' + (t.account || '') + ' ' + (t.trip || '')).includes(q)))
+  const inMonth = t => UI.billView ? (billDateOf(t) || '').startsWith(UI.month) : t.date.startsWith(UI.month);
+  const list = S.transactions.filter(t => inMonth(t) && (UI.filterCat === 'all' || t.cat === UI.filterCat) && (UI.filterAcc === 'all' || (UI.filterAcc === '__none' ? !t.account : t.account === UI.filterAcc)) && (!q || norm(t.desc + ' ' + (t.note || '') + ' ' + (t.account || '') + ' ' + (t.trip || '')).includes(q)))
     .sort((a, b) => b.date.localeCompare(a.date) || a.desc.localeCompare(b.desc));
   let spent = 0, inc = 0, work = 0, back = 0;
   list.forEach(t => { if (t.type === 'income') inc += t.amount; else if (t.type === 'advance' || t.type === 'reimb') back += t.amount; else if (t.type === 'return') back -= t.amount; else if (t.cat === 'work') work += t.amount; else spent += t.amount; });
-  let html = `<div class="small muted" style="margin:10px 0 0">${list.length} items · spent ${yen(spent)}${work ? ` · work ${yen(work)}` : ''}${back ? ` · from work ${yen(back)}` : ''}${inc ? ` · income ${yen(inc)}` : ''}</div>`;
+  let html = (UI.billView ? `<div class="banner small" style="margin:10px 0 0;padding:8px 10px">Showing purchases on the bill paid in ${monthLabel(UI.month)} · <button class="link small" data-act="billViewOff">show by purchase date</button></div>` : '') + `<div class="small muted" style="margin:10px 0 0">${list.length} items · spent ${yen(spent)}${work ? ` · work ${yen(work)}` : ''}${back ? ` · from work ${yen(back)}` : ''}${inc ? ` · income ${yen(inc)}` : ''}</div>`;
   let day = '';
   for (const t of list) {
     if (t.date !== day) { day = t.date; html += `<div class="txday">${dayLabel(day)}</div>`; }
@@ -687,9 +757,11 @@ function vImport() {
     <label>Trip name for rows you mark 💼 Work (optional)<input data-chg="impTrip" list="tripList2" value="${esc(I.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList2">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
     <div class="grid2"><label>Card / account name<input data-chg="impAccount" value="${esc(I.account)}" placeholder="e.g. Rakuten Card"></label>
     <label>Amounts in this file<select data-chg="impMode"><option value="card"${I.mode === 'card' ? ' selected' : ''}>Card statement</option><option value="bank"${I.mode === 'bank' ? ' selected' : ''}>Bank statement (− = spent)</option></select></label></div>
+    ${I.hasInst ? `<label>Instalments (分割払い)<select data-chg="impInstMode"><option value="monthly"${I.instMode === 'monthly' ? ' selected' : ''}>Count this month's payment — matches your bill</option><option value="full"${I.instMode === 'full' ? ' selected' : ''}>Count the full price once, when bought</option></select></label>` : ''}
+    <div class="row" style="margin-bottom:6px"><span>Total of ticked rows</span><span class="grow"></span><b>${yen(I.items.filter(x => x.include && x.type === 'expense').reduce((a, x) => a + x.amount, 0))}</b></div>
     <div class="small muted">${I.items.length} rows found${dups ? ` · ${dups} already imported or later instalments (unticked)` : ''}. Check the categories, then import.</div></div>
     <div class="card scroll"><table><thead><tr><th></th><th>Date</th><th>Description</th><th class="right">Amount</th><th>Category</th></tr></thead><tbody>
-    ${I.items.map((x, i) => `<tr class="${x.dup ? 'dup' : ''}"><td><input type="checkbox" data-chg="impInc" data-i="${i}"${x.include ? ' checked' : ''}></td><td style="white-space:nowrap">${x.date.slice(5)}</td><td>${esc(x.desc)}${x.inst ? `<div class="chip">Instalment ${x.inst} — full price already counted when bought</div>` : ''}</td>
+    ${I.items.map((x, i) => `<tr class="${x.dup ? 'dup' : ''}"><td><input type="checkbox" data-chg="impInc" data-i="${i}"${x.include ? ' checked' : ''}></td><td style="white-space:nowrap">${x.date.slice(5)}</td><td>${esc(x.desc)}${x.inst ? `<div class="chip">Instalment ${x.inst} — full price already counted when bought</div>` : ''}${x.instInfo ? `<div class="chip">${esc(x.instInfo)}</div>` : ''}</td>
       <td class="right ${x.type === 'income' ? 'good' : ''}" style="white-space:nowrap">${x.type === 'income' ? '+' : ''}${yen(x.amount)}</td>
       <td>${x.type === 'income' ? 'Income' : `<select data-chg="impCat" data-i="${i}">${catOptions(x.cat)}</select>`}</td></tr>`).join('')}
     </tbody></table>
@@ -725,7 +797,7 @@ async function handleCsvFile(file) {
   const sig = importSignature(rows, det), saved = S.importMaps[sig];
   UI.imp = { fileName: file.name, enc, rows, det, sig,
     map: saved ? { dateCol: saved.dateCol, descCol: saved.descCol, amountCol: saved.amountCol } : { dateCol: det.dateCol, descCol: det.descCol, amountCol: det.amountCol },
-    mode: saved ? saved.mode : 'card', account: saved ? saved.account : detectCard(rows, det, file.name) };
+    mode: saved ? saved.mode : 'card', instMode: saved && saved.instMode || 'monthly', account: saved ? saved.account : detectCard(rows, det, file.name) };
   buildImportItems(); render();
 }
 
@@ -798,10 +870,20 @@ function vSettings() {
   const lb = S.settings.lastBackup;
   const B = S.bank || {};
   return `<div class="card"><h3>🏦 Bank balance</h3>
-      <p class="small muted" style="margin-top:0">Enter how much was in your bank account(s) on the day you start tracking. The app then adds income and takes off spending from that date. Card purchases are taken off when you make them, so this shows the money that's really free.</p>
+      <p class="small muted" style="margin-top:0">Enter the actual amount in your bank account(s) on the day you start tracking. From then on the app adds income and takes off bank payments, and takes off each card bill on the day it's paid (set billing days under Cards below). It also shows what's left after the card bills still to come.</p>
       <div class="grid2"><label>Balance on that day (¥)<input type="number" inputmode="numeric" data-chg="bankAmount" value="${B.amount ?? ''}" placeholder="e.g. 1200000"></label>
       <label>Starting date<input type="date" data-chg="bankDate" value="${B.date || ''}"></label></div>
       ${B.date ? '<button class="link small" data-act="bankClear">Stop tracking bank balance</button>' : ''}</div>
+    <div class="card"><h3>💳 Cards</h3>
+      <p class="small muted" style="margin-top:0">When each card's bill is paid from your bank. Statements that include a payment date (JAL, Takashimaya) fill this in for you; for others (e.g. Amex) set it from your card's terms (〇日締め・翌月〇日払い).</p>
+      ${cardNames().length ? cardNames().map(a => { const c = S.cards[a] || {}; const days = (sel, last) => Array.from({ length: 31 }, (_, i) => i + 1).map(d => `<option value="${d}"${+sel === d ? ' selected' : ''}>${d === 31 && last ? 'End of month' : d}</option>`).join('');
+        return `<div style="padding:6px 0;border-bottom:1px solid var(--line)"><div class="row"><b>${esc(a)}</b><span class="grow"></span>${c.guessed ? '<span class="chip">estimated from statement — check</span>' : ''}</div>
+          <div class="grid2" style="grid-template-columns:1fr 1fr 1fr;gap:0 8px;margin-top:6px">
+          <label>Closes on day<select data-chg="cardCfg" data-acc="${esc(a)}" data-k="close"><option value="">—</option>${days(c.close, true)}</select></label>
+          <label>Paid on day<select data-chg="cardCfg" data-acc="${esc(a)}" data-k="pay"><option value="">—</option>${days(c.pay, true)}</select></label>
+          <label>Paid<select data-chg="cardCfg" data-acc="${esc(a)}" data-k="offset"><option value="1"${(c.offset || 1) === 1 ? ' selected' : ''}>next month</option><option value="2"${c.offset === 2 ? ' selected' : ''}>2 months later</option></select></label></div></div>`; }).join('')
+        : '<div class="muted small">Import a statement first.</div>'}
+    </div>
     <div class="card"><h3>📉 Debts</h3>
       <p class="small muted" style="margin-top:0">Add each loan with what's left on it. Link it to its regular payment and the app counts it down every month. Whenever you get a loan statement, update the balance here.</p>
       ${S.debts.map(d => `<div class="tx" data-act="editDebt" data-id="${d.id}"><div class="d"><div>${esc(d.name)}</div><div class="chip">${esc(d.type)} · ${yen(d.balance)} on ${dayLabel(d.asOf)}${d.rate ? ` · ${d.rate}%` : ''}</div></div><span class="amt">${yen(debtStatus(d).remaining)}</span></div>`).join('')}
@@ -866,7 +948,7 @@ function mergeState(inc) {
     for (const x of inc[k] || []) if (!map.has(x.id) || newer) map.set(x.id, x);
     S[k] = [...map.values()];
   }
-  for (const k of ['applied', 'importMaps', 'tripMeta']) S[k] = newer ? Object.assign({}, S[k], inc[k]) : Object.assign({}, inc[k], S[k]);
+  for (const k of ['applied', 'importMaps', 'tripMeta', 'cards']) S[k] = newer ? Object.assign({}, S[k], inc[k]) : Object.assign({}, inc[k], S[k]);
   if (inc.bank && (!S.bank || (inc.bank.u || 0) > (S.bank.u || 0))) S.bank = inc.bank;
   if (newer && inc.settings) S.settings = Object.assign(S.settings, inc.settings, { lastBackup: S.settings.lastBackup });
   return res;
@@ -904,7 +986,7 @@ function markSummarySent() { const si = summaryInfo(); if ((UI.sumWeek ?? si.whi
 
 /* ---------- actions ---------- */
 const ACT = {
-  tab: el => { UI.view = el.dataset.view; window.scrollTo(0, 0); render(); },
+  tab: el => { UI.view = el.dataset.view; UI.billView = false; window.scrollTo(0, 0); render(); },
   month: el => { UI.month = addMonths(UI.month, +el.dataset.d); render(); },
   sumWeek: el => { UI.sumWeek = +el.dataset.w; render(); },
   copySum: async () => { (await copyText($('#sumText').textContent)) ? toast('Copied') : toast('Could not copy — select the text instead'); markSummarySent(); },
@@ -915,7 +997,9 @@ const ACT = {
   showUncat: () => { UI.view = 'tx'; UI.filterCat = 'uncat'; render(); },
   tripSettle: el => { S.tripMeta[el.dataset.trip] = { settled: true, date: todayStr() }; save(); render(); toast('Trip marked as settled'); },
   tripReopen: el => { delete S.tripMeta[el.dataset.trip]; save(); render(); },
-  showAcc: el => { UI.view = 'tx'; UI.filterCat = 'all'; UI.filterAcc = el.dataset.acc; render(); },
+  byCardMode: el => { S.settings.byCardMode = el.dataset.m; save(); render(); },
+  showAcc: el => { UI.view = 'tx'; UI.filterCat = 'all'; UI.filterAcc = el.dataset.acc; UI.billView = S.settings.byCardMode === 'bill'; render(); },
+  billViewOff: () => { UI.billView = false; renderTxList(); },
   showWork: () => { UI.view = 'tx'; UI.filterCat = 'work'; render(); },
   addTx: () => openTxModal(null),
   editTx: el => openTxModal(el.dataset.id),
@@ -944,8 +1028,15 @@ const ACT = {
     const I = UI.imp; let n = 0;
     const seen = {};
     for (const x of I.items) if (x.include) { const base = 'i_' + hashStr([x.date, norm(x.desc), x.amount, x.type, norm(I.account)].join('|')); seen[base] = (seen[base] || 0) + 1;
-      S.transactions.push({ id: base + '_' + seen[base], u: now(), date: x.date, desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
-    S.importMaps[I.sig] = { ...I.map, mode: I.mode, account: I.account };
+      S.transactions.push({ id: base + '_' + seen[base], u: now(), date: x.date, ...(x.billDate && x.type === 'expense' ? { billDate: x.billDate } : {}), desc: x.desc, amount: x.amount, type: x.type, cat: x.cat, trip: x.cat === 'work' ? (I.trip || '').trim() : '', account: I.account.trim(), note: '', source: 'import' }); n++; }
+    S.importMaps[I.sig] = { ...I.map, mode: I.mode, instMode: I.instMode, account: I.account };
+    const acc = I.account.trim(), withBill = I.items.filter(x => x.include && x.billDate && !x.instInfo);
+    if (acc && withBill.length && !(S.cards[acc] && S.cards[acc].close)) {
+      // Guess: the statement closed on its latest purchase date, and is paid on the statement's payment day.
+      const pay = withBill.map(x => x.billDate).sort().pop(), lastBuy = withBill.map(x => x.date).sort().pop();
+      const off = Math.max(1, (pay.slice(0, 4) - lastBuy.slice(0, 4)) * 12 + (pay.slice(5, 7) - lastBuy.slice(5, 7)));
+      S.cards[acc] = { close: +lastBuy.slice(8, 10) >= 25 ? 31 : +lastBuy.slice(8, 10), pay: +pay.slice(8, 10), offset: off, guessed: true };
+    }
     const months = [...new Set(I.items.filter(x => x.include).map(x => x.date.slice(0, 7)))].sort();
     save(); UI.imp = null; UI.view = 'overview'; if (months.length) UI.month = months[months.length - 1]; render(); toast(`Imported ${n} entries`);
   },
@@ -1022,12 +1113,13 @@ const ACT = {
 };
 const CHG = {
   filterCat: el => { UI.filterCat = el.value; renderTxList(); },
-  filterAcc: el => { UI.filterAcc = el.value; renderTxList(); },
+  filterAcc: el => { UI.filterAcc = el.value; if (el.value === 'all') UI.billView = false; renderTxList(); },
   mType: () => syncTxModal(),
   mCat: el => { $('#m_rule').hidden = el.value === MODAL.origCat || el.value === 'uncat'; syncTxModal(); },
   rType: el => { $('#r_catwrap').hidden = el.value === 'income'; },
   impMap: el => { UI.imp.map[el.dataset.key] = +el.value; buildImportItems(); render(); },
   impMode: el => { UI.imp.mode = el.value; buildImportItems(); render(); },
+  impInstMode: el => { UI.imp.instMode = el.value; buildImportItems(); render(); },
   impAccount: el => { UI.imp.account = el.value; },
   impTrip: el => { UI.imp.trip = el.value; },
   impInc: el => { UI.imp.items[+el.dataset.i].include = el.checked; render(); },
@@ -1041,6 +1133,7 @@ const CHG = {
   contactNum: el => { const c = S.contacts.find(x => x.id === el.dataset.id); if (c) { c.number = el.value.trim(); save(); } },
   bankAmount: el => { S.bank = Object.assign(S.bank || { date: curYm() + '-01' }, { amount: parseFloat(el.value) || 0, u: now() }); save(); render(); },
   bankDate: el => { S.bank = Object.assign(S.bank || { amount: 0 }, { date: el.value, u: now() }); save(); render(); },
+  cardCfg: el => { const a = el.dataset.acc; S.cards[a] = Object.assign(S.cards[a] || {}, { [el.dataset.k]: +el.value || 0, guessed: false, u: now() }); save(); },
   weekStart: el => { S.settings.weekStart = +el.value; save(); },
   summaryDay: el => { S.settings.summaryDay = +el.value; save(); }
 };
