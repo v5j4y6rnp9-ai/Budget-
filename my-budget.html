@@ -305,22 +305,30 @@ function billDateOf(t) {
 function bankStatus() {
   const B = S.bank; if (!B || !B.date) return null;
   const today = todayStr(); let inc = 0, out = 0, workIn = 0, billsPaid = 0; const up = {};
+  // Company money for trips that aren't settled yet: what came in from work vs. work costs already paid from the bank.
+  const trips = tripStats(), openTrip = t => { const k = (t.trip || '').trim() || '(no trip name)'; return trips[k] && !trips[k].settled ? k : null; };
+  const co = {}; let workUpcoming = 0;
+  const coAdd = (k, v) => { co[k] = (co[k] || 0) + v; };
   for (const t of S.transactions) {
     if (t.type === 'income' || WORK_TYPES.includes(t.type)) {
       if (t.date < B.date || t.date > today) continue;
-      if (t.type === 'income') inc += t.amount; else workIn += t.type === 'return' ? -t.amount : t.amount;
+      if (t.type === 'income') inc += t.amount;
+      else { const v = t.type === 'return' ? -t.amount : t.amount; workIn += v; const k = openTrip(t); if (k) coAdd(k, v); }
       continue;
     }
+    const isWork = t.cat === 'work' && openTrip(t);
     const bd = billDateOf(t);
     if (bd) {
       if (bd < B.date) continue;
-      if (bd <= today) billsPaid += t.amount;
-      else { const k = t.account + '|' + bd; up[k] = (up[k] || 0) + t.amount; }
+      if (bd <= today) { billsPaid += t.amount; if (isWork) coAdd(isWork, -t.amount); }
+      else { const k = t.account + '|' + bd; up[k] = (up[k] || 0) + t.amount; if (isWork) workUpcoming += t.amount; }
     } else {
       if (t.date < B.date || t.date > today) continue;
-      out += t.amount;
+      out += t.amount; if (isWork) coAdd(isWork, -t.amount);
     }
   }
+  const advHeld = Object.values(co).filter(v => v > 0).reduce((a, v) => a + v, 0);   // company money sitting in your bank
+  const fronted = -Object.values(co).filter(v => v < 0).reduce((a, v) => a + v, 0);  // your money spent on work, to be paid back
   const now_ = (+B.amount || 0) + inc + workIn - out - billsPaid;
   const bills = Object.entries(up).map(([k, v]) => { const [card, date] = k.split('|'); return { card, date, amount: v }; }).sort((a, b) => a.date.localeCompare(b.date));
   const billsTotal = bills.reduce((a, b) => a + b.amount, 0);
@@ -331,7 +339,8 @@ function bankStatus() {
     if (Math.min(r.day || 1, daysInMonth(cym)) > d) upcoming += r.type === 'income' ? +r.amount : -r.amount;
   }
   const unknown = S.transactions.some(t => t.type === 'expense' && isCard(t.account) && !billDateOf(t) && t.date >= B.date);
-  return { start: +B.amount || 0, date: B.date, inc, workIn, out, billsPaid, now: now_, bills, billsTotal, afterBills: now_ - billsTotal, upcoming, endOfMonth: now_ + upcoming, unknown };
+  const own = now_ - advHeld + fronted;
+  return { advHeld, fronted, own, ownAfterBills: own - (billsTotal - workUpcoming), workUpcoming, coTrips: co, start: +B.amount || 0, date: B.date, inc, workIn, out, billsPaid, now: now_, bills, billsTotal, afterBills: now_ - billsTotal, upcoming, endOfMonth: now_ + upcoming, unknown };
 }
 const accountNames = () => [...new Set(S.transactions.map(t => (t.account || '').trim()).filter(Boolean))].sort();
 // ----- Quick add: one entry per line, e.g. "1200 lunch", "yesterday 3,400 groceries", "+50000 bonus", "10/28 800 taxi @Suica" -----
@@ -599,6 +608,13 @@ function vOverview() {
         ${bs.bills.map(b => `<div class="row small" style="padding:2px 0"><span>💳 ${esc(b.card)} · ${dayLabel(b.date)}</span><span class="grow"></span><span class="bad">−${yen(b.amount)}</span></div>`).join('')}
         <div class="row" style="margin-top:6px;border-top:1px solid var(--line);padding-top:6px"><span>Left after these bills</span><span class="grow"></span><b class="${bs.afterBills < 0 ? 'bad' : 'good'}">${yen(bs.afterBills)}</b></div>` : ''}
       ${bs.upcoming ? `<div class="row small" style="margin-top:6px"><span>End of ${mName}, after regular items still to come (${bs.upcoming > 0 ? '+' : '−'}${yen(Math.abs(bs.upcoming))})${bs.bills.some(b => b.date.startsWith(curYm())) ? ' and this month\'s bills' : ''}</span><span class="grow"></span><b>${yen(bs.now + bs.upcoming - bs.bills.filter(b => b.date.startsWith(curYm())).reduce((a, b) => a + b.amount, 0))}</b></div>` : ''}
+      ${bs.advHeld || bs.fronted || bs.workUpcoming ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line)">
+        <div class="row"><b>💼 Your own money</b><span class="grow"></span><span class="chip">without work money</span></div>
+        <div class="row" style="margin-top:6px"><span>Now</span><span class="grow"></span><b style="font-size:18px" class="${bs.own < 0 ? 'bad' : ''}">${yen(bs.own)}</b></div>
+        <div class="small muted">In the bank ${yen(bs.now)}${bs.advHeld ? ` − work advances still held ${yen(bs.advHeld)}` : ''}${bs.fronted ? ` + work costs you've paid and will get back ${yen(bs.fronted)}` : ''}</div>
+        ${bs.bills.length ? `<div class="row" style="margin-top:6px"><span>After your own card bills${bs.workUpcoming ? ` <span class="small muted">(work charges of ${yen(bs.workUpcoming)} left out)</span>` : ''}</span><span class="grow"></span><b class="${bs.ownAfterBills < 0 ? 'bad' : 'good'}">${yen(bs.ownAfterBills)}</b></div>` : ''}
+        <div class="small muted" style="margin-top:4px">Only trips that aren't settled count as work money. Per diem from settled trips is yours and stays in.</div>
+      </div>` : ''}
       ${bs.unknown ? `<div class="small warn" style="margin-top:6px">Some card purchases have no payment date yet. Set each card's billing days in <button class="link small" data-act="tab" data-view="settings">Settings → Cards</button>.</div>` : ''}
     </div>`;
   } else if (S.transactions.length) html += `<div class="card small">🏦 Want to see how much is left in the bank? Add your starting balance in <button class="link small" data-act="tab" data-view="settings">Settings</button>.</div>`;
