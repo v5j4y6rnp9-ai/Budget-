@@ -313,19 +313,24 @@ function bankStatus() {
     if (t.type === 'income' || WORK_TYPES.includes(t.type)) {
       if (t.date < B.date || t.date > today) continue;
       if (t.type === 'income') inc += t.amount;
-      else { const v = t.type === 'return' ? -t.amount : t.amount; workIn += v; const k = openTrip(t); if (k) coAdd(k, v); }
+      else workIn += t.type === 'return' ? -t.amount : t.amount;
       continue;
     }
-    const isWork = t.cat === 'work' && openTrip(t);
     const bd = billDateOf(t);
     if (bd) {
       if (bd < B.date) continue;
-      if (bd <= today) { billsPaid += t.amount; if (isWork) coAdd(isWork, -t.amount); }
-      else { const k = t.account + '|' + bd; up[k] = (up[k] || 0) + t.amount; if (isWork) workUpcoming += t.amount; }
+      if (bd <= today) billsPaid += t.amount;
+      else { const k = t.account + '|' + bd; up[k] = (up[k] || 0) + t.amount; }
     } else {
       if (t.date < B.date || t.date > today) continue;
-      out += t.amount; if (isWork) coAdd(isWork, -t.amount);
+      out += t.amount;
     }
+  }
+  // Company money for open trips, whenever it happened (money from before the start date is inside the starting balance).
+  for (const t of S.transactions) {
+    const k = openTrip(t); if (!k) continue;
+    if (WORK_TYPES.includes(t.type)) { if (t.date <= today) coAdd(k, t.type === 'return' ? -t.amount : t.amount); }
+    else if (t.type === 'expense' && t.cat === 'work') { const bd = billDateOf(t), paid = bd || t.date; if (paid <= today) coAdd(k, -t.amount); else workUpcoming += t.amount; }
   }
   const advHeld = Object.values(co).filter(v => v > 0).reduce((a, v) => a + v, 0);   // company money sitting in your bank
   const fronted = -Object.values(co).filter(v => v < 0).reduce((a, v) => a + v, 0);  // your money spent on work, to be paid back
@@ -603,7 +608,7 @@ function vOverview() {
     const mName = monthLabel(curYm()).split(' ')[0];
     html += `<div class="card"><div class="row"><h3 style="margin:0">🏦 Money in the bank</h3><span class="grow"></span><span class="chip">estimate</span></div>
       <div class="row" style="margin-top:8px"><span>In the bank now</span><span class="grow"></span><b style="font-size:20px" class="${bs.now < 0 ? 'bad' : ''}">${yen(bs.now)}</b></div>
-      <div class="small muted">Since ${dayLabel(bs.date)}: start ${yen(bs.start)} + income ${yen(bs.inc)}${bs.workIn ? ` + from work ${yen(bs.workIn)}` : ''}${bs.out ? ` − bank payments ${yen(bs.out)}` : ''}${bs.billsPaid ? ` − card bills paid ${yen(bs.billsPaid)}` : ''}</div>
+      <div class="small muted">Since ${dayLabel(bs.date)}: start ${yen(bs.start)} + income ${yen(bs.inc)}${bs.workIn ? ` + from work ${yen(bs.workIn)}` : ''}${bs.out > 0 ? ` − bank payments ${yen(bs.out)}` : bs.out < 0 ? ` + money back ${yen(-bs.out)}` : ''}${bs.billsPaid ? ` − card bills paid ${yen(bs.billsPaid)}` : ''}</div>
       ${bs.bills.length ? `<div style="margin-top:10px" class="small"><b>Card bills still to pay</b></div>
         ${bs.bills.map(b => `<div class="row small" style="padding:2px 0"><span>💳 ${esc(b.card)} · ${dayLabel(b.date)}</span><span class="grow"></span><span class="bad">−${yen(b.amount)}</span></div>`).join('')}
         <div class="row" style="margin-top:6px;border-top:1px solid var(--line);padding-top:6px"><span>Left after these bills</span><span class="grow"></span><b class="${bs.afterBills < 0 ? 'bad' : 'good'}">${yen(bs.afterBills)}</b></div>` : ''}
@@ -741,6 +746,7 @@ function openTxModal(id) {
     <label id="m_catwrap">Category<select id="m_cat" data-chg="mCat">${catOptions(t.cat)}</select></label>
     ${S.debts.length ? `<label id="m_debtwrap">Pays off debt (optional)<select id="m_debt"><option value="">—</option>${S.debts.map(d => `<option value="${d.id}"${d.id === t.debtId ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>` : ''}
     <label id="m_tripwrap">Business trip name (the trip the company pays back — not a category)<input id="m_trip" list="tripList" value="${esc(t.trip || '')}" placeholder="e.g. Singapore Nov 2026"><datalist id="tripList">${tripNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
+    <div id="m_multi" hidden style="background:var(--bg);border-radius:10px;padding:10px;margin-bottom:10px"></div>
     <div id="m_preview" class="small" hidden style="background:var(--accent-soft);border-radius:10px;padding:10px;margin-bottom:10px"></div>
     <div class="grid2"><label>Account / card<input id="m_account" list="accList" value="${esc(t.account || '')}" placeholder="optional"><datalist id="accList">${accountNames().map(a => `<option value="${esc(a)}">`).join('')}</datalist></label>
     <label>Note<input id="m_note" value="${esc(t.note || '')}" placeholder="optional"></label></div>
@@ -755,6 +761,15 @@ function updatePreview() {
   const type = $('#m_type').value, name = $('#m_trip').value.trim(), x = parseFloat($('#m_amount').value) || 0;
   if (!WORK_TYPES.includes(type)) { box.hidden = true; return; }
   box.hidden = false;
+  if (!$('#m_multi').hidden) {
+    const sel = [...document.querySelectorAll('.m_tripchk:checked')].map(c => ({ name: c.value, owed: +c.dataset.owed }));
+    if (!sel.length) { box.innerHTML = 'Tick the trips this payment covers.'; return; }
+    const owed = sel.reduce((a, t) => a + t.owed, 0), left = x - owed, opt = $('#m_left').value;
+    let h = sel.map(t => `✈️ ${esc(t.name)}: <b>${yen(t.owed)}</b>`).join('<br>') + `<br>Total owed: <b>${yen(owed)}</b>`;
+    if (x) h += left > 0 ? `<br>➡️ Left over: <b class="good">${yen(left)}</b> — ${opt === 'transport' ? 'recorded as transport money back' : opt === 'perdiem' ? `per diem on ${esc(sel[sel.length - 1].name)}` : 'other income'}`
+      : left < 0 ? `<br>➡️ <b class="bad">${yen(-left)}</b> less than owed — that part stays owed on the last trip(s)` : '<br>➡️ Exactly what was owed — all ticked trips will be settled';
+    box.innerHTML = h; return;
+  }
   if (!name) { box.innerHTML = 'Pick the trip this belongs to and the app will do the maths.'; return; }
   const t = tripStats(MODAL && MODAL.id)[name] || { E: 0, A: 0, P: 0, R: 0 };
   const E = t.E, A = t.A + (type === 'advance' ? x : 0), P = t.P + (type === 'reimb' ? x : 0), R = t.R + (type === 'return' ? x : 0);
@@ -770,11 +785,28 @@ function updatePreview() {
   }
   box.innerHTML = h;
 }
+// Trips that still owe you money (for lump-sum payments from work).
+function owingTrips() {
+  return Object.values(tripStats()).filter(t => !t.settled).map(t => ({ name: t.name, owed: t.E - t.A - t.P + t.R, last: t.last })).filter(t => t.owed > 0).sort((a, b) => a.last.localeCompare(b.last));
+}
 function syncTxModal() {
   const type = $('#m_type').value, cat = $('#m_cat').value;
+  const multi = type === 'reimb' && !MODAL.id && owingTrips().length > 0;
+  const box = $('#m_multi');
+  if (multi && !box.dataset.ready) {
+    const trips = owingTrips();
+    box.innerHTML = `<div class="small" style="margin-bottom:6px"><b>Which trips does this payment cover?</b> Tick all that were paid together.</div>
+      ${trips.map(t => `<label class="check" style="margin-bottom:6px"><input type="checkbox" class="m_tripchk" data-chg="mMulti" value="${esc(t.name)}" data-owed="${t.owed}"> ✈️ ${esc(t.name)} <span class="muted small">— owes you ${yen(t.owed)}</span></label>`).join('')}
+      <label style="margin:8px 0 0">Anything left over is<select id="m_left" data-chg="mMulti">
+        <option value="transport">Transport money back — lowers your Transport spending</option>
+        <option value="perdiem">Per diem — counted as income</option>
+        <option value="income">Other income</option></select></label>`;
+    box.dataset.ready = '1';
+  }
+  box.hidden = !multi;
   $('#m_catwrap').hidden = type !== 'expense';
   if ($('#m_debtwrap')) $('#m_debtwrap').hidden = type !== 'expense';
-  $('#m_tripwrap').hidden = !(WORK_TYPES.includes(type) || (type === 'expense' && cat === 'work'));
+  $('#m_tripwrap').hidden = multi || !(WORK_TYPES.includes(type) || (type === 'expense' && cat === 'work'));
   updatePreview();
   if (type !== 'expense') $('#m_rule').hidden = true;
 }
@@ -959,6 +991,7 @@ function vSettings() {
       ${lb ? `Last backup: ${lb}.` : '<span class="warn">No backup yet.</span>'}</p>
       <div class="btns"><button class="primary" data-act="exportJson">Export backup</button><button data-act="importJson">Restore backup</button><button data-act="exportCsv">Export entries (CSV)</button></div></div>
     <div class="card"><h3>Privacy</h3><p class="small" style="margin:0">This app has no server and no account. It is locked so it cannot connect to the internet, so nothing you enter is sent anywhere. The only time data leaves this device is when <i>you</i> copy or send a weekly summary (for example by text message, which goes through your phone carrier).</p></div>
+    <div class="card small muted" style="text-align:center">App version 6 Nov 2026 (c)</div>
     <div class="card"><h3>Danger zone</h3><button class="danger" data-act="wipe">Delete all data</button></div>`;
 }
 
@@ -1058,12 +1091,28 @@ const ACT = {
   editTx: el => openTxModal(el.dataset.id),
   closeModal: () => closeModal(),
   txSave: () => {
-    const type = $('#m_type').value, date = $('#m_date').value, desc = $('#m_desc').value.trim(), amount = parseFloat($('#m_amount').value);
+    const type = $('#m_type').value, date = $('#m_date').value, amount = parseFloat($('#m_amount').value);
+    const desc = $('#m_desc').value.trim() || ({ reimb: 'Payment from work', advance: 'Advance from work', return: 'Returned to work' })[type] || '';
     if (!date) return toast('Please enter a date');
     if (!desc) return toast('Please enter a description');
     if (!isFinite(amount) || amount === 0) return toast('Please enter an amount');
     let cat = type === 'income' ? 'income' : WORK_TYPES.includes(type) ? 'work' : $('#m_cat').value;
     if (cat === 'uncat') cat = categorize(desc);
+    if (!$('#m_multi').hidden) {
+      const sel = [...document.querySelectorAll('.m_tripchk:checked')].map(c => ({ name: c.value, owed: +c.dataset.owed }));
+      if (!sel.length) return toast('Tick at least one trip');
+      const gid = uid(), base = { date, type: 'reimb', cat: 'work', account: $('#m_account').value.trim(), note: $('#m_note').value.trim(), source: 'manual', group: gid, u: now() };
+      let rest = amount; const parts = [];
+      for (const t of sel) { const a = Math.min(t.owed, Math.max(0, rest)); rest -= a; if (a > 0) parts.push({ trip: t.name, amount: a }); }
+      const opt = $('#m_left').value; let extra = '';
+      if (rest > 0) {
+        if (opt === 'perdiem') { if (parts.length) parts[parts.length - 1].amount += rest; else parts.push({ trip: sel[0].name, amount: rest }); extra = `per diem ${yen(rest)}`; }
+        else if (opt === 'income') { S.transactions.push({ id: uid(), u: now(), source: 'manual', date, desc: `${desc} — extra`, amount: rest, type: 'income', cat: 'income', account: '', note: `Part of ${yen(amount)} from work`, group: gid }); extra = `income ${yen(rest)}`; }
+        else { const tc = S.categories.find(c => /transport|交通/i.test(c.name)); S.transactions.push({ id: uid(), u: now(), source: 'manual', date, desc: 'Transport money back from work', amount: -rest, type: 'expense', cat: tc ? tc.id : 'uncat', account: '', note: `Part of ${yen(amount)} from work`, group: gid }); extra = `transport ${yen(rest)}`; }
+      }
+      for (const p of parts) S.transactions.push({ id: uid(), ...base, desc: `${desc} (part of ${yen(amount)})`, amount: p.amount, trip: p.trip });
+      save(); closeModal(); render(); toast(`Split across ${parts.length} trip${parts.length === 1 ? '' : 's'}${extra ? ' · ' + extra : ''}`); return;
+    }
     const trip = cat === 'work' ? $('#m_trip').value.trim() : '';
     if (WORK_TYPES.includes(type) && !trip) return toast('Please enter the business trip this money is for');
     const data = { date, desc, amount, type, cat, trip, debtId: type === 'expense' && $('#m_debt') ? $('#m_debt').value : '', account: $('#m_account').value.trim(), note: $('#m_note').value.trim() };
@@ -1171,6 +1220,7 @@ const CHG = {
   filterCat: el => { UI.filterCat = el.value; renderTxList(); },
   filterAcc: el => { UI.filterAcc = el.value; if (el.value === 'all') UI.billView = false; renderTxList(); },
   mType: () => syncTxModal(),
+  mMulti: () => updatePreview(),
   mCat: el => { $('#m_rule').hidden = el.value === MODAL.origCat || el.value === 'uncat'; syncTxModal(); },
   rType: el => { $('#r_catwrap').hidden = el.value === 'income'; },
   impMap: el => { UI.imp.map[el.dataset.key] = +el.value; buildImportItems(); render(); },
