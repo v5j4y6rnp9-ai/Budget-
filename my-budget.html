@@ -765,7 +765,8 @@ function updatePreview() {
     const sel = [...document.querySelectorAll('.m_tripchk:checked')].map(c => ({ name: c.value, owed: +c.dataset.owed }));
     if (!sel.length) { box.innerHTML = 'Tick the trips this payment covers.'; return; }
     const owed = sel.reduce((a, t) => a + t.owed, 0), left = x - owed, opt = $('#m_left').value;
-    let h = sel.map(t => `✈️ ${esc(t.name)}: <b>${yen(t.owed)}</b>`).join('<br>') + `<br>Total owed: <b>${yen(owed)}</b>`;
+    let h = sel.map(t => t.owed >= 0 ? `✈️ ${esc(t.name)}: owes <b>${yen(t.owed)}</b>` : `✈️ ${esc(t.name)}: unused advance <b class="warn">−${yen(-t.owed)}</b> (deducted)`).join('<br>') + `<br>Net owed to you: <b>${yen(owed)}</b>`;
+    if (owed < 0) h += `<br><span class="warn">The unused advance is more than what's owed, so normally you'd pay work back ${yen(-owed)}. Only continue if this payment really nets that off.</span>`;
     if (x) h += left > 0 ? `<br>➡️ Left over: <b class="good">${yen(left)}</b> — ${opt === 'transport' ? 'recorded as transport money back' : opt === 'perdiem' ? `per diem on ${esc(sel[sel.length - 1].name)}` : 'other income'}`
       : left < 0 ? `<br>➡️ <b class="bad">${yen(-left)}</b> less than owed — that part stays owed on the last trip(s)` : '<br>➡️ Exactly what was owed — all ticked trips will be settled';
     box.innerHTML = h; return;
@@ -787,7 +788,8 @@ function updatePreview() {
 }
 // Trips that still owe you money (for lump-sum payments from work).
 function owingTrips() {
-  return Object.values(tripStats()).filter(t => !t.settled).map(t => ({ name: t.name, owed: t.E - t.A - t.P + t.R, last: t.last })).filter(t => t.owed > 0).sort((a, b) => a.last.localeCompare(b.last));
+  // All open trips: owed > 0 = work owes you; owed < 0 = unused advance (deducted from a lump sum).
+  return Object.values(tripStats()).filter(t => !t.settled).map(t => ({ name: t.name, owed: t.E - t.A - t.P + t.R, adv: t.A, last: t.last })).sort((a, b) => a.last.localeCompare(b.last));
 }
 function syncTxModal() {
   const type = $('#m_type').value, cat = $('#m_cat').value;
@@ -796,7 +798,7 @@ function syncTxModal() {
   if (multi && !box.dataset.ready) {
     const trips = owingTrips();
     box.innerHTML = `<div class="small" style="margin-bottom:6px"><b>Which trips does this payment cover?</b> Tick all that were paid together.</div>
-      ${trips.map(t => `<label class="check" style="margin-bottom:6px"><input type="checkbox" class="m_tripchk" data-chg="mMulti" value="${esc(t.name)}" data-owed="${t.owed}"> ✈️ ${esc(t.name)} <span class="muted small">— owes you ${yen(t.owed)}</span></label>`).join('')}
+      ${trips.map(t => `<label class="check" style="margin-bottom:6px"><input type="checkbox" class="m_tripchk" data-chg="mMulti" value="${esc(t.name)}" data-owed="${t.owed}"> ✈️ ${esc(t.name)} <span class="muted small">— ${t.owed > 0 ? `owes you ${yen(t.owed)}${t.adv ? ' (after advance)' : ''}` : t.owed < 0 ? `${yen(-t.owed)} of advance unused` : 'advance fully used'}</span></label>`).join('')}
       <label style="margin:8px 0 0">Anything left over is<select id="m_left" data-chg="mMulti">
         <option value="transport">Transport money back — lowers your Transport spending</option>
         <option value="perdiem">Per diem — counted as income</option>
@@ -991,7 +993,7 @@ function vSettings() {
       ${lb ? `Last backup: ${lb}.` : '<span class="warn">No backup yet.</span>'}</p>
       <div class="btns"><button class="primary" data-act="exportJson">Export backup</button><button data-act="importJson">Restore backup</button><button data-act="exportCsv">Export entries (CSV)</button></div></div>
     <div class="card"><h3>Privacy</h3><p class="small" style="margin:0">This app has no server and no account. It is locked so it cannot connect to the internet, so nothing you enter is sent anywhere. The only time data leaves this device is when <i>you</i> copy or send a weekly summary (for example by text message, which goes through your phone carrier).</p></div>
-    <div class="card small muted" style="text-align:center">App version 6 Nov 2026 (c)</div>
+    <div class="card small muted" style="text-align:center">App version 6 Nov 2026 (d)</div>
     <div class="card"><h3>Danger zone</h3><button class="danger" data-act="wipe">Delete all data</button></div>`;
 }
 
@@ -1102,8 +1104,11 @@ const ACT = {
       const sel = [...document.querySelectorAll('.m_tripchk:checked')].map(c => ({ name: c.value, owed: +c.dataset.owed }));
       if (!sel.length) return toast('Tick at least one trip');
       const gid = uid(), base = { date, type: 'reimb', cat: 'work', account: $('#m_account').value.trim(), note: $('#m_note').value.trim(), source: 'manual', group: gid, u: now() };
-      let rest = amount; const parts = [];
-      for (const t of sel) { const a = Math.min(t.owed, Math.max(0, rest)); rest -= a; if (a > 0) parts.push({ trip: t.name, amount: a }); }
+      // Unused advances are netted off: record them as returned, which frees that money for the trips that are owed.
+      const neg = sel.filter(t => t.owed < 0), R = neg.reduce((a, t) => a - t.owed, 0);
+      let rest = amount + R; const parts = [];
+      for (const t of sel.filter(t => t.owed > 0)) { const a = Math.min(t.owed, Math.max(0, rest)); rest -= a; if (a > 0) parts.push({ trip: t.name, amount: a }); }
+      for (const t of neg) S.transactions.push({ id: uid(), ...base, type: 'return', desc: `Unused advance deducted (part of ${yen(amount)})`, amount: -t.owed, trip: t.name });
       const opt = $('#m_left').value; let extra = '';
       if (rest > 0) {
         if (opt === 'perdiem') { if (parts.length) parts[parts.length - 1].amount += rest; else parts.push({ trip: sel[0].name, amount: rest }); extra = `per diem ${yen(rest)}`; }
@@ -1111,7 +1116,7 @@ const ACT = {
         else { const tc = S.categories.find(c => /transport|交通/i.test(c.name)); S.transactions.push({ id: uid(), u: now(), source: 'manual', date, desc: 'Transport money back from work', amount: -rest, type: 'expense', cat: tc ? tc.id : 'uncat', account: '', note: `Part of ${yen(amount)} from work`, group: gid }); extra = `transport ${yen(rest)}`; }
       }
       for (const p of parts) S.transactions.push({ id: uid(), ...base, desc: `${desc} (part of ${yen(amount)})`, amount: p.amount, trip: p.trip });
-      save(); closeModal(); render(); toast(`Split across ${parts.length} trip${parts.length === 1 ? '' : 's'}${extra ? ' · ' + extra : ''}`); return;
+      save(); closeModal(); render(); toast(`Settled across ${sel.length} trip${sel.length === 1 ? '' : 's'}${extra ? ' · ' + extra : ''}`); return;
     }
     const trip = cat === 'work' ? $('#m_trip').value.trim() : '';
     if (WORK_TYPES.includes(type) && !trip) return toast('Please enter the business trip this money is for');
